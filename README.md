@@ -181,36 +181,4 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-## System Architecture
-
-### Architecture Diagram
-```mermaid
-graph TD
-    User[User/Browser] -->|1. Access| FE[Frontend/Vue.js]
-    FE -->|2. Reset Request| BE[Backend/Flask]
-    BE -->|3. Verify User| AD[Active Directory]
-    BE -->|4. Send Code| SMTP[SMTP Server]
-    SMTP -->|5. Verification Code| User
-    User -->|6. Submit Code + New Password| FE
-    FE -->|7. Verify & Reset| BE
-    BE -->|8. Update Password| AD
-```
-
-### Information Flow
-1. User accesses the password reset interface
-2. Frontend sends password reset request to backend
-3. Backend verifies user existence in AD
-4. System sends verification code via email
-5. User receives verification code
-6. User submits verification code and new password
-7. Backend validates the code and password requirements
-8. System updates password in Active Directory
-
-### Component Description
-- **Frontend**: Vue.js based web interface
-- **Backend**: Flask API server
-- **Active Directory**: User authentication and management
-- **SMTP Server**: Email service for verification codes
-- **Database**: Redis for verification code storage 
+SOFTWARE. 
