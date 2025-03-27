@@ -2,6 +2,8 @@
 
 A Flask-based Active Directory password reset tool that supports password reset via email verification code.
 
+[中文文档](README_CN.md) | English
+
 ## Features
 
 - Password reset via email verification code

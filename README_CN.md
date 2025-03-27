@@ -2,6 +2,8 @@
 
 一个基于 Flask 的 Active Directory 密码重置工具，支持通过邮件验证码重置密码。
 
+[English](README.md) | 中文文档
+
 ## 功能特点
 
 - 支持通过邮件验证码重置 AD 密码
