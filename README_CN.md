@@ -23,7 +23,9 @@
 - Active Directory 服务器
 - SMTP 邮件服务器
 
-## 安装步骤
+## 安装方法
+
+### 方法一：传统安装
 
 1. 克隆项目：
 ```bash
@@ -58,6 +60,53 @@ SMTP_PASSWORD=your_smtp_password
 SERVER_IP=0.0.0.0
 PORT=5001
 ```
+
+### 方法二：Docker Compose 安装
+
+1. 克隆仓库：
+```bash
+git clone https://github.com/Jas0nxlee/AD-Reset.git
+cd AD-Reset
+```
+
+2. 创建 `.env` 配置文件（参考上述传统安装部分的配置示例）
+
+3. 创建 `docker-compose.yml` 文件：
+```yaml
+version: '3.8'
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+networks:
+  default:
+    driver: bridge
+```
+
+4. 启动服务：
+```bash
+docker-compose up -d
+```
+
+5. 访问应用：
+在浏览器中访问 `http://localhost:5173`
 
 ## 使用方法
 
@@ -120,4 +169,36 @@ Copyright (c) 2025 Jas0nxlee
 
 在所有副本或重要部分的软件中都必须包含上述版权声明和本许可声明。
 
-本软件按"原样"提供，不提供任何形式的明示或暗示的保证，包括但不限于对适销性、特定用途的适用性和非侵权性的保证。在任何情况下，作者或版权持有人都不对任何索赔、损害或其他责任负责，无论这些责任是由合同、侵权或其他原因引起的，与软件或其使用或其他交易有关。 
+本软件按"原样"提供，不提供任何形式的明示或暗示的保证，包括但不限于对适销性、特定用途的适用性和非侵权性的保证。在任何情况下，作者或版权持有人都不对任何索赔、损害或其他责任负责，无论这些责任是由合同、侵权或其他原因引起的，与软件或其使用或其他交易有关。
+
+## 系统架构
+
+### 架构图
+```mermaid
+graph TD
+    User[用户/浏览器] -->|1. 访问| FE[前端/Vue.js]
+    FE -->|2. 重置请求| BE[后端/Flask]
+    BE -->|3. 验证用户| AD[Active Directory]
+    BE -->|4. 发送验证码| SMTP[SMTP服务器]
+    SMTP -->|5. 验证码| User
+    User -->|6. 提交验证码和新密码| FE
+    FE -->|7. 验证并重置| BE
+    BE -->|8. 更新密码| AD
+```
+
+### 信息流转
+1. 用户访问密码重置界面
+2. 前端向后端发送密码重置请求
+3. 后端在AD中验证用户存在性
+4. 系统通过邮件发送验证码
+5. 用户接收验证码
+6. 用户提交验证码和新密码
+7. 后端验证代码和密码要求
+8. 系统在Active Directory中更新密码
+
+### 组件说明
+- **前端**：基于Vue.js的Web界面
+- **后端**：Flask API服务器
+- **Active Directory**：用户认证和管理
+- **SMTP服务器**：验证码邮件服务
+- **数据库**：Redis用于验证码存储

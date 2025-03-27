@@ -25,6 +25,8 @@ A Flask-based Active Directory password reset tool that supports password reset 
 
 ## Installation
 
+### Method 1: Traditional Installation
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/Jas0nxlee/AD-Reset.git
@@ -58,6 +60,53 @@ SMTP_PASSWORD=your_smtp_password
 SERVER_IP=0.0.0.0
 PORT=5001
 ```
+
+### Method 2: Docker Compose Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/Jas0nxlee/AD-Reset.git
+cd AD-Reset
+```
+
+2. Create a `.env` file with your configuration (as shown above in the Traditional Installation section)
+
+3. Create a `docker-compose.yml` file:
+```yaml
+version: '3.8'
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+networks:
+  default:
+    driver: bridge
+```
+
+4. Start the services:
+```bash
+docker-compose up -d
+```
+
+5. Access the application:
+Open your browser and visit `http://localhost:5173`
 
 ## Usage
 
@@ -132,4 +181,36 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE. 
+SOFTWARE.
+
+## System Architecture
+
+### Architecture Diagram
+```mermaid
+graph TD
+    User[User/Browser] -->|1. Access| FE[Frontend/Vue.js]
+    FE -->|2. Reset Request| BE[Backend/Flask]
+    BE -->|3. Verify User| AD[Active Directory]
+    BE -->|4. Send Code| SMTP[SMTP Server]
+    SMTP -->|5. Verification Code| User
+    User -->|6. Submit Code + New Password| FE
+    FE -->|7. Verify & Reset| BE
+    BE -->|8. Update Password| AD
+```
+
+### Information Flow
+1. User accesses the password reset interface
+2. Frontend sends password reset request to backend
+3. Backend verifies user existence in AD
+4. System sends verification code via email
+5. User receives verification code
+6. User submits verification code and new password
+7. Backend validates the code and password requirements
+8. System updates password in Active Directory
+
+### Component Description
+- **Frontend**: Vue.js based web interface
+- **Backend**: Flask API server
+- **Active Directory**: User authentication and management
+- **SMTP Server**: Email service for verification codes
+- **Database**: Redis for verification code storage 
