@@ -1,4 +1,4 @@
-# AD-Reset
+# AD-Password-Reset
 
 A Flask-based Active Directory password reset tool with email verification code support.
 
@@ -15,7 +15,7 @@ A Flask-based Active Directory password reset tool with email verification code 
 
 ## Project Repository
 
-[https://github.com/Jas0nxlee/AD-Reset](https://github.com/Jas0nxlee/AD-Reset)
+[https://github.com/Jas0nxlee/AD-Password-Reset](https://github.com/Jas0nxlee/AD-Password-Reset)
 
 ## Requirements
 
@@ -30,8 +30,8 @@ A Flask-based Active Directory password reset tool with email verification code 
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/Jas0nxlee/AD-Reset.git
-cd AD-Reset
+git clone https://github.com/Jas0nxlee/AD-Password-Reset.git
+cd AD-Password-Reset
 ```
 
 2. Install dependencies:
@@ -85,8 +85,8 @@ Open your browser and visit `http://localhost:5173`
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/Jas0nxlee/AD-Reset.git
-cd AD-Reset
+git clone https://github.com/Jas0nxlee/AD-Password-Reset.git
+cd AD-Password-Reset
 ```
 
 2. Create `.env` configuration file (refer to the configuration example in the traditional installation section above)

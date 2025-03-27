@@ -1,4 +1,4 @@
-# AD-Reset
+# AD-Password-Reset
 
 一个基于 Flask 的 Active Directory 密码重置工具，支持通过邮件验证码重置密码。
 
@@ -15,7 +15,7 @@
 
 ## 项目地址
 
-[https://github.com/Jas0nxlee/AD-Reset](https://github.com/Jas0nxlee/AD-Reset)
+[https://github.com/Jas0nxlee/AD-Password-Reset](https://github.com/Jas0nxlee/AD-Password-Reset)
 
 ## 系统要求
 
@@ -29,8 +29,8 @@
 
 1. 克隆项目：
 ```bash
-git clone https://github.com/Jas0nxlee/AD-Reset.git
-cd AD-Reset
+git clone https://github.com/Jas0nxlee/AD-Password-Reset.git
+cd AD-Password-Reset
 ```
 
 2. 安装依赖：
@@ -87,8 +87,8 @@ npm run dev
 
 1. 克隆仓库：
 ```bash
-git clone https://github.com/Jas0nxlee/AD-Reset.git
-cd AD-Reset
+git clone https://github.com/Jas0nxlee/AD-Password-Reset.git
+cd AD-Password-Reset
 ```
 
 2. 创建 `.env` 配置文件（参考上述传统安装部分的配置示例）
