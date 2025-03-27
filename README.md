@@ -1,27 +1,27 @@
 # AD-Reset
 
-A Flask-based Active Directory password reset tool that supports password reset via email verification code.
+A Flask-based Active Directory password reset tool with email verification code support.
 
-[中文文档](README_CN.md) | English
+English | [中文文档](README_CN.md)
 
 ## Features
 
-- Password reset via email verification code
-- Support for multiple username formats (username, email, UPN, etc.)
+- Support password reset via email verification code
+- Multiple username format support (username, email, UPN, etc.)
 - Password complexity validation
 - Detailed logging
 - SSL/TLS encryption support
-- Multi-language support (English/Chinese)
+- Multi-language support (Chinese/English)
 
-## Project URL
+## Project Repository
 
 [https://github.com/Jas0nxlee/AD-Reset](https://github.com/Jas0nxlee/AD-Reset)
 
-## System Requirements
+## Requirements
 
 - Python 3.8+
-- Active Directory server
-- SMTP mail server
+- Active Directory Server
+- SMTP Mail Server
 
 ## Installation
 
@@ -61,6 +61,23 @@ SERVER_IP=0.0.0.0
 PORT=5001
 ```
 
+## Usage
+
+1. Start the backend service:
+```bash
+python backend/app.py
+```
+
+2. Start the frontend service:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+3. Access the application:
+Open your browser and visit `http://localhost:5173`
+
 ### Method 2: Docker Compose Installation
 
 1. Clone the repository:
@@ -69,9 +86,9 @@ git clone https://github.com/Jas0nxlee/AD-Reset.git
 cd AD-Reset
 ```
 
-2. Create a `.env` file with your configuration (as shown above in the Traditional Installation section)
+2. Create `.env` configuration file (refer to the configuration example in the traditional installation section above)
 
-3. Create a `docker-compose.yml` file:
+3. Create `docker-compose.yml` file:
 ```yaml
 version: '3.8'
 services:
@@ -100,30 +117,13 @@ networks:
     driver: bridge
 ```
 
-4. Start the services:
+4. Start services:
 ```bash
 docker-compose up -d
 ```
 
 5. Access the application:
-Open your browser and visit `http://localhost:5173`
-
-## Usage
-
-1. Start the backend service:
-```bash
-python backend/app.py
-```
-
-2. Start the frontend service:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-3. Access the application:
-Open your browser and visit `http://localhost:5173`
+Visit `http://localhost:5173` in your browser
 
 ## Password Policy
 
@@ -150,7 +150,7 @@ Log files are stored in the `logs` directory and include:
 ## Security Features
 
 - SSL/TLS encrypted communication
-- Encrypted password transmission
+- Password transmission encryption
 - Verification code expiration
 - Detailed error handling and logging
 - Protection against brute force attacks
@@ -164,21 +164,3 @@ Issues and Pull Requests are welcome to help improve the project.
 MIT License
 
 Copyright (c) 2025 Jas0nxlee
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE. 
