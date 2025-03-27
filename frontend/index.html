@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>域账号密码重置</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
+    <style>
+        .container {
+            max-width: 600px;
+            margin-top: 50px;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .btn-verify {
+            width: 120px;
+        }
+        .password-requirements {
+            font-size: 0.8rem;
+            color: #6c757d;
+            margin-top: 0.25rem;
+        }
+        .error-message {
+            color: #dc3545;
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="text-center mb-4">域账号密码重置</h2>
+        <div class="card">
+            <div class="card-body">
+                <form id="resetForm">
+                    <div class="form-group">
+                        <label for="username">域账号用户名</label>
+                        <input type="text" class="form-control" id="username" autocomplete="username" required>
+                        <div class="error-message" id="username-error"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="email">邮箱地址</label>
+                        <div class="input-group">
+                            <input type="email" class="form-control" id="email" autocomplete="email" required>
+                            <button type="button" class="btn btn-primary btn-verify" id="sendCode">获取验证码</button>
+                        </div>
+                        <small class="form-text text-muted">请输入您在域中注册的邮箱地址</small>
+                        <div class="error-message" id="email-error"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="code">验证码</label>
+                        <input type="text" class="form-control" id="code" autocomplete="one-time-code" required>
+                        <div class="error-message" id="code-error"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="newPassword">新密码</label>
+                        <input type="password" class="form-control" id="newPassword" autocomplete="new-password" required>
+                        <div class="password-requirements">
+                            密码必须包含：
+                            <ul>
+                                <li>至少8个字符</li>
+                                <li>至少一个大写字母</li>
+                                <li>至少一个小写字母</li>
+                                <li>至少一个数字</li>
+                                <li>至少一个特殊字符</li>
+                            </ul>
+                        </div>
+                        <div class="error-message" id="password-error"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="confirmPassword">确认新密码</label>
+                        <input type="password" class="form-control" id="confirmPassword" autocomplete="new-password" required>
+                        </div>
+                        <div class="error-message" id="confirm-password-error"></div>
+                    </div>
+                    <button type="submit" class="btn btn-success w-100">重置密码</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let API_BASE_URL = '';
+        let countdown = 0;
+
+        // 初始化获取API地址
+        (async function init() {
+            try {
+                const response = await fetch('/api/get-config');
+                const config = await response.json();
+                API_BASE_URL = config.api_base_url;
+            } catch (error) {
+                console.error('Failed to get API config:', error);
+                API_BASE_URL = 'http://10.0.0.208:5001/api'; // 默认值
+            }
+            console.log('API_BASE_URL设置为:', API_BASE_URL);
+        })();
+        let timer = null;
+
+        function showError(elementId, message) {
+            const errorElement = document.getElementById(elementId);
+            errorElement.textContent = message;
+            errorElement.style.display = 'block';
+        }
+
+        function hideError(elementId) {
+            const errorElement = document.getElementById(elementId);
+            errorElement.style.display = 'none';
+        }
+
+        function validatePassword(password) {
+            const hasUpperCase = PASSWORD_RULES.requireUppercase && /[A-Z]/.test(password);
+            const hasLowerCase = PASSWORD_RULES.requireLowercase && /[a-z]/.test(password);
+            const hasNumbers = PASSWORD_RULES.requireNumber && /\d/.test(password);
+            const hasSpecialChar = PASSWORD_RULES.requireSpecialChar &&
+                new RegExp(`[${PASSWORD_RULES.specialChars}]`).test(password);
+
+            if (password.length < PASSWORD_RULES.minLength) {
+                return `密码长度至少为${PASSWORD_RULES.minLength}个字符`;
+            }
+            if (PASSWORD_RULES.requireUppercase && !hasUpperCase) {
+                return '密码必须包含至少一个大写字母';
+            }
+            if (PASSWORD_RULES.requireLowercase && !hasLowerCase) {
+                return '密码必须包含至少一个小写字母';
+            }
+            if (PASSWORD_RULES.requireNumber && !hasNumbers) {
+                return '密码必须包含至少一个数字';
+            }
+            if (PASSWORD_RULES.requireSpecialChar && !hasSpecialChar) {
+                return `密码必须包含至少一个特殊字符（${PASSWORD_RULES.specialChars}）`;
+            }
+            return '';
+        }
+
+        document.getElementById('sendCode').addEventListener('click', async () => {
+            const username = document.getElementById('username').value;
+            const email = document.getElementById('email').value;
+            hideError('username-error');
+            hideError('email-error');
+
+            if (!username) {
+                showError('username-error', '请输入域账号用户名');
+                return;
+            }
+
+            if (!email) {
+                showError('email-error', '请输入邮箱地址');
+                return;
+            }
+
+            const button = document.getElementById('sendCode');
+            button.disabled = true;
+            button.setAttribute('disabled', 'true');
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/send-code`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username, email })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    countdown = 60;
+                    updateButtonText();
+                    timer = setInterval(updateButtonText, 1000);
+                } else {
+                    showError('email-error', data.message);
+                    button.disabled = false;
+                    button.removeAttribute('disabled');
+                }
+            } catch (error) {
+                showError('email-error', '验证码发送失败，请重试');
+                button.disabled = false;
+                button.removeAttribute('disabled');
+            }
+        });
+
+        function updateButtonText() {
+            const button = document.getElementById('sendCode');
+            if (countdown > 0) {
+                button.textContent = `${countdown}秒后重试`;
+                button.disabled = true;
+                button.setAttribute('disabled', 'true');
+                countdown--;
+            } else {
+                clearInterval(timer);
+                button.textContent = '获取验证码';
+                button.disabled = false;
+                button.removeAttribute('disabled');
+            }
+        }
+
+        // 统一密码验证规则
+        const PASSWORD_RULES = {
+            minLength: 8,
+            requireUppercase: true,
+            requireLowercase: true,
+            requireNumber: true,
+            requireSpecialChar: true,
+            specialChars: '!@#$%^&*(),.?":{}|<>'
+        };
+
+        document.getElementById('resetForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const email = document.getElementById('email').value;
+            const code = document.getElementById('code').value;
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+
+            // 清除所有错误提示
+            ['username', 'email', 'code', 'password', 'confirm-password'].forEach(id => {
+                hideError(`${id}-error`);
+            });
+
+            // 验证密码强度
+            const passwordError = validatePassword(newPassword);
+            if (passwordError) {
+                showError('password-error', passwordError);
+                return;
+            }
+
+            if (newPassword !== confirmPassword) {
+                showError('confirm-password-error', '两次输入的密码不一致');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/reset-password`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username,
+                        email,
+                        code,
+                        new_password: newPassword
+                    })
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    // 创建成功提示框
+                    const successAlert = document.createElement('div');
+                    successAlert.className = 'alert alert-success alert-dismissible fade show';
+                    successAlert.setAttribute('role', 'alert');
+                    successAlert.innerHTML = `
+                        <i class="bi bi-check-circle-fill me-2"></i>
+                        密码重置成功！
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    `;
+                    
+                    // 在重置密码按钮上方插入提示框
+                    const submitButton = document.querySelector('button[type="submit"]');
+                    submitButton.parentNode.insertBefore(successAlert, submitButton);
+                    
+                    // 重置表单
+                    document.getElementById('resetForm').reset();
+                    return; // 添加return语句，确保在成功后不会继续执行
+                } else {
+                    showError('password-error', data.message);
+                }
+            } catch (error) {
+                showError('password-error', '密码重置失败，请重试');
+            }
+        });
+    </script>
+</body>
+</html>
