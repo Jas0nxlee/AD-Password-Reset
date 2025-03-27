@@ -2,7 +2,7 @@
 
 A Flask-based Active Directory password reset tool with email verification code support.
 
-English | [中文文档](README_CN.md)
+[中文文档](README_CN.md) | English
 
 ## Features
 
@@ -22,6 +22,7 @@ English | [中文文档](README_CN.md)
 - Python 3.8+
 - Active Directory Server
 - SMTP Mail Server
+- Node.js 14+ (for frontend development)
 
 ## Installation
 
@@ -35,11 +36,13 @@ cd AD-Reset
 
 2. Install dependencies:
 ```bash
+cd backend
 pip install -r requirements.txt
+cp .env-template .env
 ```
 
 3. Configure environment variables:
-Create a `.env` file and set the following variables:
+Edit the `.env` file with the following variables:
 ```env
 # LDAP Configuration
 LDAP_SERVER=your_ldap_server
@@ -150,7 +153,7 @@ Log files are stored in the `logs` directory and include:
 ## Security Features
 
 - SSL/TLS encrypted communication
-- Password transmission encryption
+- Encrypted password transmission
 - Verification code expiration
 - Detailed error handling and logging
 - Protection against brute force attacks
@@ -163,4 +166,4 @@ Issues and Pull Requests are welcome to help improve the project.
 
 MIT License
 
-Copyright (c) 2025 Jas0nxlee
+Copyright (c) 2025 Jas0nxlee 

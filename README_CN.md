@@ -35,11 +35,13 @@ cd AD-Reset
 
 2. 安装依赖：
 ```bash
+cd backend
 pip install -r requirements.txt
+cp .env-template .env
 ```
 
 3. 配置环境变量：
-创建 `.env` 文件并设置以下变量：
+编辑`.env` 文件设置以下变量：
 ```env
 # LDAP配置
 LDAP_SERVER=your_ldap_server
