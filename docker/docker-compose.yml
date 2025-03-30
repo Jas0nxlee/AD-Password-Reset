@@ -20,9 +20,14 @@ services:
       - FLASK_ENV=production
     ports:
       - "5001:5001"
+    volumes:
+      - backend_logs:/app/logs
     networks:
       - app-network
 
 networks:
   app-network:
-    driver: bridge 
+    driver: bridge
+
+volumes:
+  backend_logs: 

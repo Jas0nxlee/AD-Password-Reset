@@ -22,6 +22,7 @@
 - Python 3.8+
 - Active Directory 服务器
 - SMTP 邮件服务器
+- Node.js 14+ (用于前端开发)
 
 ## 安装方法
 

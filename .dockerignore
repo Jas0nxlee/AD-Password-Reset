@@ -1,0 +1,49 @@
+# Git specific
+.git
+
+# OS specific
+.DS_Store
+
+# IDE specific
+.idea/
+.vscode/
+
+# Node.js specific
+node_modules/
+frontend/node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Python specific
+*.pyc
+__pycache__/
+*.egg-info/
+.venv/
+backend/.venv/  # Adjust if your backend venv has a different name
+backend/venv/   # 明确包含backend的virtualenv目录
+
+# Build artifacts / Logs / Environment variables
+build/
+dist/
+*.log
+.env*
+*.lock
+logs/           # 排除根目录的日志目录
+backend/logs/   # 排除后端的日志目录
+
+# Docker specific files (usually not needed inside the image)
+Dockerfile
+docker-compose.yml
+.dockerignore
+docker/         # 排除整个docker目录
+
+# 临时文件和缓存
+**/cache/
+**/tmp/
+**/.pytest_cache/
+**/__pycache__/
+
+# Documentation / Tests (optional, uncomment if not needed in image)
+# README*
+# docs/
+# tests/ 
