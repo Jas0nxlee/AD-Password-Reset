@@ -95,7 +95,7 @@
                 API_BASE_URL = config.api_base_url;
             } catch (error) {
                 console.error('Failed to get API config:', error);
-                API_BASE_URL = 'http://10.0.0.208:5001/api'; // 默认值
+                API_BASE_URL = 'http://localhost:5001/api'; // 默认值
             }
             console.log('API_BASE_URL设置为:', API_BASE_URL);
         })();
