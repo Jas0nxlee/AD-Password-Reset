@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch
 # Assuming your Flask app instance is named 'app' in 'app.py'
 # and can be imported. Adjust if your app factory or naming is different.
-from .app import app as flask_app 
+from .app import app as flask_app
 
 # Pytest fixture for the Flask test client
 @pytest.fixture
@@ -168,7 +168,7 @@ def test_reset_password_ad_reset_fails(mock_reset_ad_password, mock_verify_code,
 def test_reset_password_email_mismatch(mock_get_user_email, client):
     """Test /api/reset-password with email mismatch."""
     mock_get_user_email.return_value = 'actual_ad_email@example.com'
-    
+
     payload = {
         'username': 'testuser',
         'email': 'provided_different_email@example.com',

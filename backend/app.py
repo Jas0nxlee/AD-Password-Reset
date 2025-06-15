@@ -122,7 +122,7 @@ class LDAPConnection:
                 logger.info(f"LDAP_PORT environment variable not set, defaulting to {ldap_port_to_use} for SSL.")
         except ValueError:
             logger.warning(f"Invalid LDAP_PORT value: '{env_ldap_port}'. Defaulting to {ldap_port_to_use} for SSL.")
-        
+
         # Configure LDAP server connection
         logger.info(f"LDAP server configuration: Server={LDAP_SERVER}, Port={ldap_port_to_use}, SSL=True")
         logger.info(f"LDAP domain: {LDAP_DOMAIN}, Base DN: {LDAP_BASE_DN}")
@@ -402,7 +402,7 @@ def verify_code(email, code):
         if not stored_code:
             logger.warning(f"No verification code record for email {email} (key: {redis_key}), it might have expired or was not sent")
             return False
-        
+
         if stored_code == code:
             logger.info(f"Verification code for email {email} validated successfully")
             try:
@@ -415,7 +415,7 @@ def verify_code(email, code):
         else:
             logger.warning(f"Incorrect verification code provided for email {email} (key: {redis_key})")
             return False
-            
+
     except redis.exceptions.RedisError as re:
         logger.error(f"Redis error: Failed to retrieve verification code for email {email}. Error: {re}")
         return False
