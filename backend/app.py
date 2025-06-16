@@ -75,6 +75,8 @@ LDAP_USER_DN = os.getenv('LDAP_USER_DN')
 LDAP_USER = os.getenv('LDAP_USER')
 LDAP_DOMAIN = os.getenv('LDAP_DOMAIN')
 LDAP_PASSWORD = os.getenv('LDAP_PASSWORD')
+LDAP_SEARCH_OUS_RAW = os.getenv('LDAP_SEARCH_OUS')
+LDAP_SEARCH_OUS = [ou.strip() for ou in LDAP_SEARCH_OUS_RAW.split(';') if ou.strip()] if LDAP_SEARCH_OUS_RAW else []
 
 # Email server configuration
 SMTP_SERVER = os.getenv('SMTP_SERVER')
@@ -126,7 +128,7 @@ class LDAPConnection:
         # Configure LDAP server connection
         logger.info(f"LDAP server configuration: Server={LDAP_SERVER}, Port={ldap_port_to_use}, SSL=True")
         logger.info(f"LDAP domain: {LDAP_DOMAIN}, Base DN: {LDAP_BASE_DN}")
-        
+
         # Use simplified TLS settings
         self.server = ldap3.Server(
             LDAP_SERVER,
@@ -265,15 +267,20 @@ def get_user_email_from_ad(username):
         
         # Ensure correct Base DN format
         base_dn = LDAP_BASE_DN
-        logger.info(f"Search Base DN: {base_dn}")
+        # logger.info(f"Search Base DN: {base_dn}") # Base DN is part of search_bases now or used if LDAP_SEARCH_OUS is empty
         
-        # Try searching in different OUs
-        search_bases = [
-            base_dn,  # Main domain
-            f"CN=Users,{base_dn}",  # Users container
-            f"OU=Domain Users,{base_dn}",  # Domain Users OU
-            f"OU=Staff,{base_dn}"  # Example/Staff OU
-        ]
+        # Determine search bases
+        if LDAP_SEARCH_OUS:
+            search_bases = LDAP_SEARCH_OUS
+            logger.info(f"Using configured LDAP_SEARCH_OUS: {search_bases}")
+        else:
+            search_bases = [
+                base_dn,  # Main domain
+                f"CN=Users,{base_dn}",  # Users container
+                f"OU=Domain Users,{base_dn}",  # Domain Users OU
+                f"OU=Staff,{base_dn}"  # Example/Staff OU (common default)
+            ]
+            logger.info(f"LDAP_SEARCH_OUS not set, using default search bases: {search_bases}")
         
         user_found = False
         for search_base in search_bases:
@@ -375,7 +382,11 @@ def send_verification_code(email):
             
     except smtplib.SMTPException as e:
         logger.error(f"SMTP error: {str(e)}")
-        logger.error(f"SMTP error details: {e.smtp_error.decode() if hasattr(e, 'smtp_error') else 'No detailed error message'}")
+        if hasattr(e, 'smtp_error') and e.smtp_error is not None:
+            smtp_error_details = e.smtp_error.decode() if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+            logger.error(f"SMTP error details: {smtp_error_details}")
+        else:
+            logger.error("SMTP error details: No detailed error message available from exception object.")
         logger.error(f"SMTP error code: {e.smtp_code if hasattr(e, 'smtp_code') else 'No error code'}")
         logger.error(f"Email sending failed: Recipient={email}, Error details={str(e)}")
         return False
@@ -500,35 +511,35 @@ def reset_ad_password(username, new_password):
             )
             
             if not conn.entries:
-                logger.error(f"User not found: {username}")
-                return False, "User not found"
+                logger.error(f"User not found during reset_ad_password: {username}")
+                return False, "User account not found. Cannot reset password."
 
             # Enhanced null check and error handling
             try:
-                if len(conn.entries) == 0: # This check is somewhat redundant due to "if not conn.entries" above, but kept for explicitness.
-                    logger.error(f"LDAP query returned empty result: {username}")
-                    return False, "User does not exist"
+                if len(conn.entries) == 0:
+                    logger.error(f"LDAP query returned empty result for user {username} (reset_ad_password, should be caught by 'not conn.entries').")
+                    return False, "User account not found. Cannot reset password."
                 
                 user_entry = conn.entries[0]
                 if not hasattr(user_entry, 'entry_dn') or not user_entry.entry_dn:
                     logger.error(f"User entry is missing entry_dn attribute: {username}")
-                    return False, "User information incomplete"
+                    return False, "User information is incomplete. Please contact support."
 
-            except IndexError as e: # Should be caught by earlier checks, but as a safeguard.
-                logger.error(f"LDAP query result index exception: {str(e)}")
-                return False, "System error: User information retrieval failed"
+            except IndexError as e:
+                logger.error(f"LDAP query result index exception in reset_ad_password: {str(e)}")
+                return False, "System error: Failed to retrieve user information. Please contact support."
             except Exception as e:
-                logger.error(f"Unexpected error while processing LDAP results: {str(e)}")
-                return False, "System error: User information processing exception"
+                logger.error(f"Unexpected error while processing LDAP results in reset_ad_password: {str(e)}")
+                return False, "System error: Failed to process user information. Please contact support."
                 
             try:
                 user_dn = user_entry.entry_dn
-                logger.debug(f"Retrieved valid user DN: {user_dn}")
+                logger.debug(f"Retrieved valid user DN for password reset: {user_dn}")
                     
-                logger.info(f"Found user DN: {user_dn}")
+                logger.info(f"Found user DN for password reset: {user_dn}")
             except Exception as e:
-                logger.error(f"Error retrieving user DN: {str(e)}")
-                return False, f"Error retrieving user DN: {str(e)}"
+                logger.error(f"Error retrieving user DN in reset_ad_password: {str(e)}")
+                return False, "Failed to retrieve user details. Please contact support."
         
             # Check account lock status and attempt to unlock
             if hasattr(conn.entries[0], 'lockoutTime'):
@@ -542,82 +553,61 @@ def reset_ad_password(username, new_password):
                         # Use AD-specific unlock method
                         success_unlock = ldap3.extend.microsoft.unlockAccount.ad_unlock_account(conn, user_dn) # Renamed success to success_unlock
                         if not success_unlock:
-                            logger.error(f"Account unlock failed: {username}")
-                            return False, "Account unlock failed, please contact administrator"
-                        logger.info(f"Account unlock successful: {username}")
+                            logger.error(f"Account unlock failed for user {username} during password reset.")
+                            return False, "Your account is currently locked and an attempt to unlock it failed. Please contact your administrator for assistance."
+                        logger.info(f"Account unlock successful for user {username} during password reset.")
 
             # Attempt to reset password
             try:
                 # Modify password and account control
                 modify_attrs = {
                     'unicodePwd': [(ldap3.MODIFY_REPLACE, [f'"{new_password}"'.encode('utf-16-le')])],
-                    'userPassword': [(ldap3.MODIFY_REPLACE, [new_password])],
-                    'userAccountControl': [(ldap3.MODIFY_REPLACE, ['66080'])],  # Set userAccountControl attribute
-                    'pwdLastSet': [(ldap3.MODIFY_REPLACE, ['-1'])]  # Password effective immediately
+                    'userPassword': [(ldap3.MODIFY_REPLACE, [new_password])], # For some LDAP systems, may not be needed if unicodePwd is set
+                    'userAccountControl': [(ldap3.MODIFY_REPLACE, ['66080'])],  # 66080 = NORMAL_ACCOUNT (512) + DONT_EXPIRE_PASSWORD (65536) + PASSWORD_NOTREQD (32) - this is a common value.
+                                                                                # PASSWORD_NOTREQD is often set temporarily during admin resets.
+                                                                                # The DONT_EXPIRE_PASSWORD flag is standard for normal accounts, actual expiry is governed by domain policy and pwdLastSet.
+                    'pwdLastSet': [(ldap3.MODIFY_REPLACE, ['-1'])]  # Forces the user to change their password upon next login.
                 }
                 success_reset = conn.modify(user_dn, modify_attrs) # Renamed success to success_reset
                 
                 if not success_reset:
-                    error_msg = conn.result.get('description', '')
-                    logger.error(f"Password modification failed: {username}, Error: {error_msg}")
-                    return False, "Password modification failed, ensure password meets domain policy requirements"
-
-                if success_reset:
-                    logger.info(f"Password reset successful: {username}")
-                    return True, "Password reset successful"
-                else:
-                    error_msg = conn.result.get('description', '')
+                    error_msg = conn.result.get('description', 'No description')
                     error_details = str(conn.result)
-                    logger.error(f"Password reset failed: {username}, Error details: {error_details}")
-                    
-                    if 'WILL_NOT_PERFORM' in error_details:
-                        if 'problem 5003' in error_details:
-                            # Provide more detailed password policy requirements
-                            policy_msg = (
-                                "Password does not meet domain policy requirements, please ensure:\n"
-                                "1. Password must be at least 8 characters long\n"
-                                "2. Must include uppercase letters, lowercase letters, numbers, and special characters\n"
-                                "3. Cannot contain username or display name\n"
-                                "4. Cannot contain consecutively repeated characters (e.g., aaa)\n"
-                                "5. Cannot contain common keyboard sequences (e.g., qwerty)\n"
-                                "6. Cannot use recently used passwords\n"
-                                "7. Cannot contain personal information like birthdays, phone numbers, etc.\n"
-                                "If it still fails, please contact the system administrator to get the full password policy requirements."
-                            ) # Policy message translated
-                            logger.info(f"Providing password policy requirements hint to user {username}")
-                            return False, policy_msg
-                        else:
-                            logger.error(f"Password reset denied, possibly a permission issue: {username}")
-                            return False, "Password reset operation denied, please contact system administrator"
-                    elif 'CONSTRAINT_VIOLATION' in error_details:
-                        logger.info(f"User {username}'s password does not meet complexity requirements")
-                        return False, "Password does not meet domain policy requirements, please use a more complex password including uppercase, lowercase, numbers, and special characters"
-                    else:
-                        logger.error(f"Unknown error caused password reset failure: {username}, {error_msg}")
-                        return False, f"Password reset failed: {error_msg}"
+                    logger.error(f"Password modification failed for {username}: {error_msg}. Details: {error_details}")
+                    # Check for specific LDAP error codes for more user-friendly messages
+                    if 'WILL_NOT_PERFORM' in error_details and 'problem 5003' in error_details: # Standard AD password policy
+                        return False, (
+                            "Password does not meet domain policy requirements. Common reasons include:\n"
+                            "- Too short (minimum 8 characters usually)\n"
+                            "- Lacks complexity (uppercase, lowercase, numbers, special characters)\n"
+                            "- Contains parts of your username or full name\n"
+                            "- Too similar to recent passwords.\n"
+                            "Please try a different password or contact your administrator for full policy details."
+                        )
+                    elif 'CONSTRAINT_VIOLATION' in error_details: # Other constraint, often complexity or history
+                         return False, "Password reset failed. This may be due to password complexity or history rules. Please try a different password or contact your administrator."
+                    return False, "Password reset failed. Please ensure your new password meets the domain's complexity and history requirements. If you need assistance, contact your administrator."
+
+                # if success_reset: # This is implicitly true if we didn't return False above
+                logger.info(f"Password reset successful: {username}")
+                return True, "Password reset successful"
+                # The 'else' part for success_reset=False is effectively handled by 'if not success_reset'
 
             except ldap3.core.exceptions.LDAPInvalidCredentialsResult as e:
-                logger.error(f"Password reset failed (authentication failed): {username}, {str(e)}")
-                return False, "System authentication failed, please contact administrator to check configuration"
-            except ldap3.core.exceptions.LDAPOperationResult as e:
+                logger.error(f"Password reset failed (authentication error for service account): {username}, {str(e)}")
+                return False, "A system configuration error occurred. Please contact your administrator."
+            except ldap3.core.exceptions.LDAPOperationResult as e: # Catch other LDAP operation errors
                 logger.error(f"Password reset failed (LDAP operation error): {username}, {str(e)}")
-                error_details = str(e)
-                if 'WILL_NOT_PERFORM' in error_details:
-                    if 'problem 5003' in error_details:
-                        return False, "Password does not meet domain policy requirements, please check if password meets: minimum 8 characters, includes uppercase, lowercase, numbers, and special characters"
-                    else:
-                        return False, "Password reset operation denied, please contact system administrator"
-                elif 'CONSTRAINT_VIOLATION' in error_details:
-                    return False, "Password does not meet complexity requirements, please use a more complex password"
-                else:
-                    return False, "Password reset operation failed, please try again later"
-            except Exception as e:
-                logger.error(f"Error during password reset process: {str(e)}")
-                return False, "Internal system error, please contact administrator"
+                # The specific conditions (WILL_NOT_PERFORM, CONSTRAINT_VIOLATION) are handled inside the 'if not success_reset' block
+                # This will catch other LDAPOperationResult errors if any fall through or if success_reset was unexpectedly True but conn.result indicates error.
+                return False, "Password reset operation failed due to a server error. Please try again later. If the issue persists, contact your administrator."
+            except Exception as e: # Catch any other unexpected errors during the reset process
+                logger.error(f"Unexpected error during password reset process for {username}: {str(e)}")
+                return False, "An unexpected internal error occurred while resetting the password. Please contact your administrator."
 
-    except Exception as e:
-        logger.error(f"Error during LDAP operation: {str(e)}")
-        return False, f"System error: {str(e)}"
+    except Exception as e: # Catch errors from LDAPConnection context manager or initial setup
+        logger.error(f"Outer exception in reset_ad_password for {username}: {str(e)}")
+        return False, "A system error occurred while processing your request. Please contact support."
 
 @app.route('/api/send-code', methods=['POST'])
 def send_code():
@@ -627,55 +617,43 @@ def send_code():
     
     if not email:
         logger.warning("Received send code request, but email address is empty")
-        return jsonify({'success': False, 'message': 'Email address cannot be empty'}), 400
+        return jsonify({'success': False, 'message': 'Please provide an email address.'}), 400
     
     if not username:
         logger.warning("Received send code request, but username is empty")
-        return jsonify({'success': False, 'message': 'Username cannot be empty'}), 400
+        return jsonify({'success': False, 'message': 'Please provide a username.'}), 400
     
     logger.info(f"Received send code request: username={username}, email={email}")
     
     # Validate email address match
     ad_email = get_user_email_from_ad(username)
     if not ad_email:
-        logger.warning(f"User {username} not found or user information cannot be retrieved")
-        # Provide more detailed error message and suggestions
-        error_message = (
-            f'User {username} not found, possible reasons:\n'
-            '1. Username spelling error\n'
-            '2. User account does not exist or is disabled\n'
-            '3. User might be in a different Organizational Unit (OU)\n'
-            'Please check if the username is correct, or try using the full email address as the username'
-        )
-        # Log more diagnostic information
-        logger.info(f"LDAP Server: {LDAP_SERVER}, Port: 636, Base DN: {LDAP_BASE_DN}") # Already mostly English
-        logger.info(f"Attempted username formats: {username}, {username}@{LDAP_DOMAIN}")
+        logger.warning(f"User '{username}' not found or user information cannot be retrieved for send-code API.")
+        error_message = f"User '{username}' not found or unable to retrieve user information. Please check the username and try again. If the issue persists, contact support."
         return jsonify({'success': False, 'message': error_message}), 404
     
     # Compare email addresses ignoring case and stripping whitespace
     if email.lower().strip() != ad_email.lower().strip():
-        logger.warning(f"User-provided email address does not match the one in the domain: provided={email}, actual={ad_email}")
-        # Provide partially hidden correct email address as a hint
-        masked_email = mask_email(ad_email)
+        logger.warning(f"User-provided email address does not match the one in the domain for user '{username}': provided={email}, actual={ad_email}")
+        masked_email = mask_email(ad_email) # Ensure mask_email is robust for None or unexpected ad_email if it can happen
         return jsonify({
             'success': False, 
-            'message': f'Provided email address does not match the user\'s email in AD. The correct email address format is: {masked_email}'
+            'message': f"The email address you provided does not match our records for user '{username}'. A hint for the correct email format is: {masked_email}. Please try again."
         }), 400
     
     try:
-        if send_verification_code(email): # Internally, this function's logs are now translated
+        if send_verification_code(email):
             logger.info(f"Successfully sent verification code to email: {email}")
-            return jsonify({'success': True, 'message': 'Verification code has been sent, please check your email'}), 200
+            return jsonify({'success': True, 'message': 'Verification code has been sent. Please check your email.'}), 200
         else:
-            logger.error(f"Failed to send verification code: email={email}")
-            return jsonify({'success': False, 'message': 'Failed to send verification code, please check if the email address is correct or contact the system administrator'}), 500
+            logger.error(f"Failed to send verification code (send_verification_code returned False): email={email}")
+            return jsonify({'success': False, 'message': 'Failed to send verification code. Please ensure your email address is correct and try again. If the problem continues, please contact your system administrator.'}), 500
     except Exception as e:
-        logger.error(f"Exception during verification code sending: {str(e)}")
+        logger.error(f"Exception during send_code route for email {email}: {str(e)}")
         logger.error(f"Exception type: {type(e).__name__}")
-        # Log stack trace
         import traceback
         logger.error(f"Stack trace: {traceback.format_exc()}")
-        return jsonify({'success': False, 'message': 'Failed to send verification code, please try again later or contact the system administrator'}), 500
+        return jsonify({'success': False, 'message': 'An unexpected error occurred while trying to send the verification code. Please try again later or contact your system administrator.'}), 500
 
 # Helper function: Partially hide email address
 def mask_email(email):
@@ -724,17 +702,17 @@ def reset_password():
     
     if not all([username, email, code, new_password]):
         logger.warning(f"Password reset request is missing required fields: username={username}, email={email}")
-        return jsonify({'success': False, 'message': 'All fields are required'}), 400
-    
+        return jsonify({'success': False, 'message': 'Please fill in all required fields: username, email, verification code, and new password.'}), 400
+
     # Re-validate email address match
-    ad_email = get_user_email_from_ad(username)
-    if not ad_email or email.lower() != ad_email.lower(): # Ensure email comparison is case-insensitive
-        logger.warning(f"Email address mismatch during password reset: provided={email}, actual={ad_email}")
-        return jsonify({'success': False, 'message': 'Username or email address is invalid'}), 400
+    ad_email = get_user_email_from_ad(username) # This already logs if user is not found in AD
+    if not ad_email or email.lower().strip() != ad_email.lower().strip(): # Added strip for robustness
+        logger.warning(f"Email address mismatch during password reset: provided={email}, ad_email_found={ad_email if ad_email else 'None'}")
+        return jsonify({'success': False, 'message': 'Invalid username or email. Please ensure you are using the same username and email you used to request the verification code.'}), 400
 
     if not verify_code(email, code):
         logger.warning(f"Verification code validation failed: email={email}")
-        return jsonify({'success': False, 'message': 'Verification code is invalid or has expired'}), 400
+        return jsonify({'success': False, 'message': 'The verification code is invalid or has expired. Please request a new code.'}), 400
     
     success_op, message_op = reset_ad_password(username, new_password) # Renamed to avoid conflict with jsonify
     if success_op:

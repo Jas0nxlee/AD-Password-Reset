@@ -16,12 +16,26 @@ services:
     build:
       context: ..
       dockerfile: docker/backend/Dockerfile
-    environment:
-      - FLASK_ENV=production
+    # environment: # Environment variables should be managed via .env file
+    #  - FLASK_ENV=production
+    env_file:
+      - ../.env # Assuming .env file is in the project root, one level up
     ports:
       - "5001:5001"
     volumes:
       - backend_logs:/app/logs
+    depends_on:
+      - redis
+    networks:
+      - app-network
+
+  redis:
+    image: "redis:alpine"
+    container_name: ad_password_reset_redis
+    ports:
+      - "6379:6379" # For external debugging, can be removed if not needed
+    volumes:
+      - redis_data:/data
     networks:
       - app-network
 
@@ -30,4 +44,5 @@ networks:
     driver: bridge
 
 volumes:
-  backend_logs: 
+  backend_logs:
+  redis_data:
