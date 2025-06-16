@@ -189,3 +189,149 @@ def test_reset_password_missing_fields(client):
     json_data = response.get_json()
     assert json_data['success'] is False
     assert json_data['message'] == 'All fields are required'
+
+
+# --- Tests for LDAP Sanitization and OU Alignment ---
+
+@patch('backend.app.send_verification_code', return_value=True) # Mock to prevent actual email sending
+@patch('backend.app.ldap3.Connection')
+def test_get_user_email_from_ad_escapes_username(MockLdapConnection, mock_send_code_helper, client):
+    """Test that special characters in username are escaped for LDAP filter in get_user_email_from_ad."""
+    mock_conn_instance = MockLdapConnection.return_value
+    mock_conn_instance.bind.return_value = True # Ensure bind succeeds
+
+    # Simulate finding a user to allow the function to proceed
+    mock_entry = MagicMock()
+    mock_entry.mail.value = 'test*user@example.com'
+    mock_conn_instance.entries = [mock_entry]
+    mock_conn_instance.search.return_value = True # Simulate search success
+
+    # Username with special characters
+    # Common special characters for LDAP filters: *, (, ), \, NUL, /
+    # Using only a subset here for a focused test.
+    # Note: The actual escaping is (char -> \hex_code_of_char)
+    # So, * -> \2a, ( -> \28, ) -> \29, \ -> \5c
+    # For `displayName=*{escaped_username}*` the outer wildcards are app-added, not user input.
+    # If user input is `test*user`, escaped is `test\2auser`. Filter becomes `(displayName=*test\2auser*)`
+
+    malicious_username = "test*user(name)"
+    escaped_malicious_username = "test\\2auser\\28name\\29" # Expected escaped form
+
+    # Call the endpoint that triggers get_user_email_from_ad
+    client.post('/api/send-code', json={'username': malicious_username, 'email': 'test*user@example.com'})
+
+    assert mock_conn_instance.search.called
+    # Check the search_filter argument in the first call to conn.search
+    # The filter is complex, so we check for key parts
+    actual_filter_arg = mock_conn_instance.search.call_args[1]['search_filter']
+
+    # Assert that the escaped username is part of the filter for sAMAccountName, cn, displayName
+    assert f"(sAMAccountName={escaped_malicious_username})" in actual_filter_arg
+    assert f"(cn={escaped_malicious_username})" in actual_filter_arg
+    assert f"(displayName=*{escaped_malicious_username}*)" in actual_filter_arg
+
+    # Also check for escaped userPrincipalName and mail attributes derived from username_formats
+    # One of the formats will be the username itself, another will be username@domain
+    assert f"(userPrincipalName={escaped_malicious_username})" in actual_filter_arg
+    assert f"(mail={escaped_malicious_username})" in actual_filter_arg
+    # Example check for domain-appended version (assuming LDAP_DOMAIN is 'example.com' in test env or mocked)
+    # This part might need mocking os.getenv('LDAP_DOMAIN') if it's not set in test env
+    # For simplicity, we'll assume the raw username format is tested above.
+
+@patch('backend.app.get_user_email_from_ad', return_value = "testuser@example.com") # Mocks initial email check
+@patch('backend.app.verify_code', return_value = True) # Mocks code verification
+@patch('backend.app.validate_password_complexity', return_value=(True, "")) # Mocks password complexity check
+@patch('backend.app.ldap3.Connection')
+def test_reset_password_uses_configured_ous(MockLdapConnection, mock_validate_pass, mock_verify, mock_get_email, client, monkeypatch):
+    """Test reset_ad_password uses LDAP_SEARCH_OUS when set."""
+    mock_conn_instance = MockLdapConnection.return_value
+    mock_conn_instance.bind.return_value = True
+
+    # Simulate search finding the user and allowing password modification to be attempted
+    mock_entry = MagicMock()
+    mock_entry.entry_dn = 'CN=testuser,OU=Test1,DC=example,DC=com'
+    # Add other attributes if needed by the reset logic, e.g., lockoutTime
+    type(mock_entry).lockoutTime = MagicMock(value=0) # Simulate account not locked
+
+    # This function will be called multiple times by reset_ad_password's search loop
+    # We need it to return a user on one of the calls, and then the modify to succeed.
+    def mock_search_logic(*args, **kwargs):
+        search_base = kwargs.get('search_base')
+        # Simulate finding the user only in the first configured OU
+        if search_base == "OU=Test1,DC=example,DC=com":
+            mock_conn_instance.entries = [mock_entry]
+            return True
+        mock_conn_instance.entries = []
+        return True # Search itself succeeds, but no entries found in other OUs
+
+    mock_conn_instance.search = MagicMock(side_effect=mock_search_logic)
+    mock_conn_instance.modify.return_value = True # Simulate password modify success
+
+    configured_ous = "OU=Test1,DC=example,DC=com;OU=Test2,DC=example,DC=com"
+    monkeypatch.setenv("LDAP_SEARCH_OUS", configured_ous)
+    # Need to reload app.py's globals or re-import LDAP_SEARCH_OUS, or ensure app context reloads it.
+    # The simplest way for testing is to directly patch the global variable in the app module.
+    monkeypatch.setattr("backend.app.LDAP_SEARCH_OUS", [ou.strip() for ou in configured_ous.split(';') if ou.strip()])
+    monkeypatch.setattr("backend.app.LDAP_BASE_DN", "DC=example,DC=com") # Ensure this is set for defaults
+
+    client.post('/api/reset-password', json={
+        'username': 'testuser',
+        'email': 'testuser@example.com',
+        'code': '123456',
+        'new_password': 'NewPassword123!'
+    })
+
+    assert mock_conn_instance.search.called
+    # Check the search_base arguments in the calls to conn.search
+    # The search should stop once the user is found in the first OU.
+    search_bases_called = [call[1]['search_base'] for call in mock_conn_instance.search.call_args_list]
+
+    expected_ous_list = ["OU=Test1,DC=example,DC=com"] # Search stops after finding in the first one
+    assert search_bases_called == expected_ous_list
+
+@patch('backend.app.get_user_email_from_ad', return_value = "testuser@example.com")
+@patch('backend.app.verify_code', return_value = True)
+@patch('backend.app.validate_password_complexity', return_value=(True, ""))
+@patch('backend.app.ldap3.Connection')
+def test_reset_password_uses_default_ous(MockLdapConnection, mock_validate_pass, mock_verify, mock_get_email, client, monkeypatch):
+    """Test reset_ad_password uses default OUs when LDAP_SEARCH_OUS is not set."""
+    mock_conn_instance = MockLdapConnection.return_value
+    mock_conn_instance.bind.return_value = True
+
+    mock_entry = MagicMock()
+    mock_entry.entry_dn = 'CN=testuser,OU=Default,DC=example,DC=com' # Assume found in one of default OUs
+    type(mock_entry).lockoutTime = MagicMock(value=0)
+
+    # Simulate finding user in one of the default OUs (e.g., LDAP_BASE_DN)
+    def mock_search_logic_default(*args, **kwargs):
+        search_base = kwargs.get('search_base')
+        if search_base == "DC=example,DC=com": # Assume LDAP_BASE_DN is this for the test
+            mock_conn_instance.entries = [mock_entry]
+            return True
+        mock_conn_instance.entries = []
+        return True
+
+    mock_conn_instance.search = MagicMock(side_effect=mock_search_logic_default)
+    mock_conn_instance.modify.return_value = True
+
+    monkeypatch.setenv("LDAP_SEARCH_OUS", "") # Ensure it's empty or not set
+    # Patch the global directly as well for robustness in test environment
+    monkeypatch.setattr("backend.app.LDAP_SEARCH_OUS", [])
+    # Set LDAP_BASE_DN for default OU construction
+    base_dn = "DC=example,DC=com"
+    monkeypatch.setattr("backend.app.LDAP_BASE_DN", base_dn)
+
+
+    client.post('/api/reset-password', json={
+        'username': 'testuser',
+        'email': 'testuser@example.com',
+        'code': '123456',
+        'new_password': 'NewPassword123!'
+    })
+
+    assert mock_conn_instance.search.called
+    search_bases_called = [call[1]['search_base'] for call in mock_conn_instance.search.call_args_list]
+
+    # Search should stop after finding in LDAP_BASE_DN
+    expected_default_ous_searched = [base_dn]
+    assert search_bases_called == expected_default_ous_searched
