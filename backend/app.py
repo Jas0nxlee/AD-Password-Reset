@@ -93,6 +93,15 @@ if REDIS_PASSWORD == '': REDIS_PASSWORD = None
 REDIS_DB = int(os.getenv('REDIS_DB', 0))
 VERIFICATION_CODE_EXPIRY_SECONDS = 5 * 60
 
+# Password Policy Configuration
+DEFAULT_BLACKLIST_WORDS = "ucas,admin,password,welcome,login,user"
+PASSWORD_COMMON_WORDS_BLACKLIST_RAW = os.getenv('PASSWORD_COMMON_WORDS_BLACKLIST', DEFAULT_BLACKLIST_WORDS)
+if isinstance(PASSWORD_COMMON_WORDS_BLACKLIST_RAW, str) and PASSWORD_COMMON_WORDS_BLACKLIST_RAW.strip():
+    PASSWORD_COMMON_WORDS_BLACKLIST = [word.strip().lower() for word in PASSWORD_COMMON_WORDS_BLACKLIST_RAW.split(',')]
+else:
+    PASSWORD_COMMON_WORDS_BLACKLIST = [word.strip().lower() for word in DEFAULT_BLACKLIST_WORDS.split(',')]
+
+
 # Initialize Redis Client
 try:
     redis_client = redis.Redis(
@@ -106,9 +115,13 @@ try:
     redis_client.ping()
     logger.info(f"Successfully connected to Redis server at {REDIS_HOST}:{REDIS_PORT}, DB {REDIS_DB}")
 except redis.exceptions.ConnectionError as e:
-    logger.error(f"Could not connect to Redis server at {REDIS_HOST}:{REDIS_PORT}, DB {REDIS_DB}. Error: {e}")
-    logger.warning("Verification codes will not work. Ensure Redis is running and configured correctly.")
-    redis_client = None
+    logger.critical(f"CRITICAL: Could not connect to Redis server at {REDIS_HOST}:{REDIS_PORT}, DB {REDIS_DB}. Error: {e}")
+    logger.critical("Verification code functionality requires Redis. The application will now exit.")
+    # Depending on the deployment, a simple exit might be enough.
+    # For a more robust solution in a containerized environment, you might raise an exception
+    # that a higher-level process manager (like systemd or a k8s liveness probe) can detect.
+    exit(1) # Exit the application if Redis connection fails
+    # redis_client = None # This line is no longer reached
 
 # Define LDAP connection class
 class LDAPConnection:
@@ -265,12 +278,15 @@ def get_user_email_from_ad(username):
                 logger.warning(f"Error searching in {search_base_item_loop}: {str(e)}")
         
         if not user_found:
-            logger.warning(f"User not found in any search Base DNs: {username}")
-            logger.info(f"Search result empty: {conn.result}")
-            logger.info(f"LDAP server information: {server.info}")
+            if LDAP_SEARCH_OUS:
+                logger.warning(f"User '{username}' not found in any of the configured LDAP_SEARCH_OUS: {LDAP_SEARCH_OUS}.")
+            else:
+                logger.warning(f"User '{username}' not found in any of the default search Base DNs.")
+            logger.info(f"Search result empty for '{username}': {conn.result}")
+            logger.info(f"LDAP server information for this attempt: {server.info}")
             return None
             
-        logger.info(f"Search results: {conn.entries}")
+        logger.info(f"Search results for '{username}': {conn.entries}")
         if not conn.entries:
             logger.warning(f"User {username} returned no entries after search, even if user_found is True. This should not happen.")
             return None
@@ -306,7 +322,17 @@ def send_verification_code(email):
 
     try:
         logger.info(f"Connecting to SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
-        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10)
+        if SMTP_PORT == 587: # Typically STARTTLS
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+        elif SMTP_PORT == 465: # Typically SSL
+            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10)
+        else: # Default to SMTP_SSL for other ports or if unsure, but log a warning
+            logger.warning(f"SMTP_PORT ({SMTP_PORT}) is not 587 (STARTTLS) or 465 (SSL). Attempting SMTP_SSL, but this might not be correct.")
+            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10)
+
         try:
             logger.info(f"Connected to SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
             logger.info(f"Logging into SMTP server: {SMTP_USERNAME}")
@@ -408,10 +434,10 @@ def validate_password_complexity(username, password):
         if pattern in password[i+2:]:
             errors.append("Password cannot contain repeated character patterns")
             break
-    common_words = ['ucas', 'admin', 'password', 'welcome', 'login', 'user']
-    for word in common_words:
+    # Use the configurable list of common words
+    for word in PASSWORD_COMMON_WORDS_BLACKLIST:
         if word in password_lower:
-            errors.append("Password cannot contain common words or organization names (e.g., ucas)")
+            errors.append(f"Password cannot contain common words or organization names (e.g., {word})")
             break
     if errors:
         return False, "\n".join(errors)
@@ -480,11 +506,14 @@ def reset_ad_password(username, new_password):
                     logger.warning(f"Error searching for user '{username}' in '{search_base_item}' during password reset: {str(e)}")
 
             if not user_found_in_ou_search:
-                logger.error(f"User '{username}' not found in any specified search OUs during password reset attempt.")
+                if LDAP_SEARCH_OUS:
+                    logger.error(f"User '{username}' not found in any of the configured LDAP_SEARCH_OUS ({LDAP_SEARCH_OUS}) during password reset attempt.")
+                else:
+                    logger.error(f"User '{username}' not found in any of the default search OUs during password reset attempt.")
                 return False, "User account not found. Cannot reset password."
 
             if not user_entry or not user_dn:
-                logger.error(f"User entry or DN not properly obtained for '{username}' after search, though user_found_in_ou_search was true.")
+                logger.error(f"User entry or DN not properly obtained for '{username}' after search, though user_found_in_ou_search was true. This should ideally not happen if user_found_in_ou_search is true.")
                 return False, "System error: Failed to retrieve complete user information. Please contact support."
                 
             if hasattr(user_entry, 'lockoutTime'):

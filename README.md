@@ -90,18 +90,27 @@ Open your browser and visit `http://localhost:5173`
     ```
 
 2.  **Prepare Environment File**:
-    *   Navigate to the `backend` directory: `cd backend`
-    *   Copy the template: `cp .env-template .env`
-    *   Go back to the project root: `cd ..`
-    *   Edit the `.env` file (now in the project root) with your specific configurations (LDAP, SMTP details, etc.).
-    *   **Important for Docker Compose**: Ensure this `.env` file includes `REDIS_HOST=redis` for the backend to connect to the Redis container. For local development without Docker, you would typically use `REDIS_HOST=localhost`. Also set other variables like `FLASK_ENV=production` or `FLASK_ENV=development` as needed.
+    *   Navigate to the `backend` directory:
+        ```bash
+        cd backend
+        ```
+    *   Copy the template:
+        ```bash
+        cp .env-template .env
+        ```
+    *   Edit the `backend/.env` file with your specific configurations (LDAP, SMTP details, etc.).
+    *   **Important for Docker Compose**: Ensure the `backend/.env` file includes `REDIS_HOST=redis` for the backend to connect to the Redis container. For local development without Docker, you would typically use `REDIS_HOST=localhost`. Also set other variables like `FLASK_ENV=production` or `FLASK_ENV=development` as needed.
+    *   Go back to the project root directory:
+        ```bash
+        cd ..
+        ```
 
 3.  **Build and Start Services with Docker Compose**:
-    The `docker-compose.yml` file is located in the `docker/` directory.
+    The `docker-compose.yml` file is located in the `docker/` directory. Run the following command from the **project root directory**:
     ```bash
     docker-compose -f docker/docker-compose.yml up -d --build
     ```
-    This command tells Docker Compose to use the specific YAML file and will build the images and start the services (backend, frontend, and Redis).
+    This command tells Docker Compose to use the specific YAML file (located in `docker/`) and will build the images and start the services (backend, frontend, and Redis). The `env_file` path in `docker-compose.yml` is relative to the `docker-compose.yml` file itself, pointing to `../backend/.env`.
 
 4.  **Access the application**:
     Visit `http://localhost:80` (for the frontend, as per the actual `docker-compose.yml` which maps port 80 on the host to port 80 of the frontend container) or `http://localhost:5173` if you adjust the frontend port mapping in `docker-compose.yml` to `5173:80`. The current `docker/docker-compose.yml` maps host port 80.
