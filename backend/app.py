@@ -12,19 +12,21 @@ from datetime import datetime, timedelta
 import json
 import ssl
 import base64
+import redis
+from ldap3.utils.conv import escape_filter_chars
 
-# 配置日志记录
+# Configure logging
 def setup_logger():
-    """配置日志记录器"""
-    # 创建logs目录（如果不存在）
+    """Configure logger"""
+    # Create logs directory (if it doesn't exist)
     if not os.path.exists('logs'):
         os.makedirs('logs')
     
-    # 创建日志记录器
+    # Create logger
     logger = logging.getLogger('password_reset')
     logger.setLevel(logging.INFO)
     
-    # 创建文件处理器（每个文件最大10MB，保留5个备份文件）
+    # Create file handler (max 10MB per file, keep 5 backup files)
     file_handler = RotatingFileHandler(
         'logs/password_reset.log',
         maxBytes=10*1024*1024,
@@ -32,10 +34,10 @@ def setup_logger():
         encoding='utf-8'
     )
     
-    # 创建控制台处理器
+    # Create console handler
     console_handler = logging.StreamHandler()
     
-    # 设置日志格式
+    # Set log format
     formatter = logging.Formatter(
         '%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -44,28 +46,25 @@ def setup_logger():
     file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
     
-    # 添加处理器到日志记录器
+    # Add handlers to logger
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
     
     return logger
 
-# 创建Flask应用和日志记录器
+# Create Flask app and logger
 app = Flask(__name__)
 CORS(app)
 logger = setup_logger()
 
-# 存储验证码和过期时间
-verification_codes = {}
-
-# 从.env文件加载配置
+# Load configuration from .env file
 from dotenv import load_dotenv
 load_dotenv()
 
-# LDAP配置
+# LDAP Configuration
 LDAP_SERVER = os.getenv('LDAP_SERVER')
-LDAP_PORT = int(os.getenv('LDAP_PORT', 389))
-# 处理LDAP基础DN
+LDAP_PORT = int(os.getenv('LDAP_PORT', 636)) # Default to 636 as SSL is always used
+# Process LDAP Base DN
 raw_base_dn = os.getenv('LDAP_BASE_DN')
 if not raw_base_dn:
     LDAP_BASE_DN = ''
@@ -77,51 +76,71 @@ LDAP_USER_DN = os.getenv('LDAP_USER_DN')
 LDAP_USER = os.getenv('LDAP_USER')
 LDAP_DOMAIN = os.getenv('LDAP_DOMAIN')
 LDAP_PASSWORD = os.getenv('LDAP_PASSWORD')
+LDAP_SEARCH_OUS_RAW = os.getenv('LDAP_SEARCH_OUS')
+LDAP_SEARCH_OUS = [ou.strip() for ou in LDAP_SEARCH_OUS_RAW.split(';') if ou.strip()] if LDAP_SEARCH_OUS_RAW else []
 
-# 邮件服务器配置
+# Email server configuration
 SMTP_SERVER = os.getenv('SMTP_SERVER')
 SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
 SMTP_USERNAME = os.getenv('SMTP_USERNAME')
 SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
 
-# 使用内存存储验证码
-use_redis = False
+# Redis Configuration
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
+if REDIS_PASSWORD == '': REDIS_PASSWORD = None
+REDIS_DB = int(os.getenv('REDIS_DB', 0))
+VERIFICATION_CODE_EXPIRY_SECONDS = 5 * 60
 
-# 定义LDAP连接类
+# Initialize Redis Client
+try:
+    redis_client = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD,
+        db=REDIS_DB,
+        socket_connect_timeout=5,
+        decode_responses=True
+    )
+    redis_client.ping()
+    logger.info(f"Successfully connected to Redis server at {REDIS_HOST}:{REDIS_PORT}, DB {REDIS_DB}")
+except redis.exceptions.ConnectionError as e:
+    logger.error(f"Could not connect to Redis server at {REDIS_HOST}:{REDIS_PORT}, DB {REDIS_DB}. Error: {e}")
+    logger.warning("Verification codes will not work. Ensure Redis is running and configured correctly.")
+    redis_client = None
+
+# Define LDAP connection class
 class LDAPConnection:
-    """LDAP连接上下文管理器"""
+    """LDAP connection context manager"""
     def __init__(self):
-        # 配置LDAP服务器连接
-        logger.info(f"LDAP服务器配置: 服务器={LDAP_SERVER}, 端口=636, SSL=True")
-        logger.info(f"LDAP域: {LDAP_DOMAIN}, 基础DN: {LDAP_BASE_DN}")
-        
-        # 使用简化TLS设置
+        # LDAP_PORT is now globally defined with a default of 636
+        logger.info(f"LDAP server configuration: Server={LDAP_SERVER}, Port={LDAP_PORT}, SSL=True")
+        logger.info(f"LDAP domain: {LDAP_DOMAIN}, Base DN: {LDAP_BASE_DN}")
+
         self.server = ldap3.Server(
             LDAP_SERVER,
-            port=636,  # 固定使用636端口进行SSL连接
-            use_ssl=True,  # 始终使用SSL
-            connect_timeout=10,  # 增加连接超时时间
-            get_info=ldap3.ALL  # 获取服务器信息
+            port=LDAP_PORT, # Use global LDAP_PORT
+            use_ssl=True,
+            connect_timeout=10,
+            get_info=ldap3.ALL
         )
         
-        # 使用简单连接策略
         self.connection = ldap3.Connection(
             self.server,
-            user=f'{LDAP_USER}@{LDAP_DOMAIN}',  # 使用UPN格式
+            user=f'{LDAP_USER}@{LDAP_DOMAIN}',
             password=LDAP_PASSWORD,
-            auto_bind=False  # 显式设置手动绑定
+            auto_bind=False
         )
         self.conn = None
 
     def __enter__(self):
-        # 始终使用UPN格式 (username@domain)
         admin_user = f'{LDAP_USER}@{LDAP_DOMAIN}'
-        logger.info(f"使用AD用户名(UPN格式): {admin_user}")
+        logger.info(f"Using AD username (UPN format): {admin_user}")
         
-        # 添加重试机制
         max_retries = 3
         retry_count = 0
-        retry_delay = 2  # 初始延迟2秒
+        retry_delay = 2
         
         while retry_count < max_retries:
             try:
@@ -131,425 +150,400 @@ class LDAPConnection:
                     password=LDAP_PASSWORD,
                     auto_bind=False
                 )
-                
-                # 手动绑定并检查结果
                 if self.conn.bind():
-                    logger.info("LDAP连接绑定成功")
+                    logger.info("LDAP connection binding successful")
                     return self.conn
                 else:
-                    logger.error(f"LDAP绑定失败: {self.conn.result}")
-                    logger.error(f"错误详情: {self.conn.last_error}")
-                    
+                    logger.error(f"LDAP binding failed: {self.conn.result}")
+                    logger.error(f"Error details: {self.conn.last_error}")
             except Exception as e:
-                logger.error(f"LDAP连接异常: {str(e)}")
+                logger.error(f"LDAP connection exception: {str(e)}")
             
-            # 重试逻辑
             retry_count += 1
             if retry_count < max_retries:
-                logger.info(f"尝试第 {retry_count} 次重新连接LDAP，等待 {retry_delay} 秒")
+                logger.info(f"Attempting LDAP reconnect {retry_count}, waiting {retry_delay} seconds")
                 import time
                 time.sleep(retry_delay)
-                retry_delay *= 2  # 指数退避策略
+                retry_delay *= 2
             else:
-                logger.error("LDAP连接重试次数已用尽")
-                raise Exception(f"LDAP绑定失败，已重试 {max_retries} 次")
-        
-        return self.conn
+                logger.error("LDAP connection retries exhausted")
+                raise Exception(f"LDAP binding failed after {max_retries} retries")
+        return self.conn # Should ideally not be reached if exception is raised
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.conn:
             self.conn.unbind()
 
 def get_user_email_from_ad(username):
-    """从Active Directory获取用户的邮箱地址"""
+    """Get user's email address from Active Directory"""
     try:
-        logger.info(f"开始连接LDAP服务器: {LDAP_SERVER}:636")
+        # LDAP_PORT is now globally defined with a default of 636
+        logger.info(f"Connecting to LDAP server: {LDAP_SERVER}:{LDAP_PORT}")
         server = ldap3.Server(
             LDAP_SERVER,
-            port=636,  # 固定使用636端口进行SSL连接
-            use_ssl=True,  # 始终使用SSL
-            connect_timeout=10,  # 增加连接超时时间
-            get_info=ldap3.ALL  # 获取服务器信息
+            port=LDAP_PORT, # Use global LDAP_PORT
+            use_ssl=True,
+            connect_timeout=10,
+            get_info=ldap3.ALL
         )
         
-        # 检查LDAP用户配置
         if not LDAP_USER:
-            logger.error("LDAP_USER环境变量未配置")
+            logger.error("LDAP_USER environment variable not configured")
             return None
             
-        # 始终使用UPN格式 (username@domain)
         admin_user = f"{LDAP_USER}@{LDAP_DOMAIN}"
-        logger.info(f"使用AD用户名(UPN格式): {admin_user}")
+        logger.info(f"Using AD username (UPN format): {admin_user}")
         
         conn = ldap3.Connection(
             server,
             user=admin_user,
             password=LDAP_PASSWORD,
-            auto_bind=False  # 显式设置手动绑定
+            auto_bind=False
         )
         
-        # 手动绑定并检查结果
         if not conn.bind():
-            logger.error(f"LDAP绑定失败: {conn.result}")
-            logger.error(f"错误详情: {conn.last_error}")
+            logger.error(f"LDAP binding failed: {conn.result}")
+            logger.error(f"Error details: {conn.last_error}")
             return None
         
-        # 尝试不同的用户名格式进行搜索
-        # 1. 原始用户名
-        # 2. 用户名@域名
-        # 3. 域名\用户名
-        # 4. 邮箱格式
         username_formats = [
-            username,  # 原始用户名
-            f"{username}@{LDAP_DOMAIN}",  # UPN格式
-            f"{LDAP_DOMAIN}\\{username}",  # 域\用户名格式
-            f"{username}@{LDAP_DOMAIN}",  # 邮箱格式
+            username,
+            f"{username}@{LDAP_DOMAIN}",
+            f"{LDAP_DOMAIN}\\{username}",
+            f"{username}@{LDAP_DOMAIN}",
         ]
         
-        # 构建更全面的搜索过滤器
         search_conditions = []
-        for format in username_formats:
-            search_conditions.append(f"(sAMAccountName={username})")
-            search_conditions.append(f"(userPrincipalName={format})")
-            search_conditions.append(f"(mail={format})")
-            # 添加CN和displayName搜索
-            search_conditions.append(f"(cn={username})")
-            search_conditions.append(f"(displayName=*{username}*)")
+        escaped_username = escape_filter_chars(username)
+        search_conditions.append(f"(sAMAccountName={escaped_username})")
+        search_conditions.append(f"(cn={escaped_username})")
+        search_conditions.append(f"(displayName=*{escaped_username}*)")
+
+        for format_item_raw in username_formats:
+            escaped_format_item = escape_filter_chars(format_item_raw)
+            if format_item_raw != username:
+                search_conditions.append(f"(userPrincipalName={escaped_format_item})")
+                search_conditions.append(f"(mail={escaped_format_item})")
+            elif username == format_item_raw :
+                search_conditions.append(f"(userPrincipalName={escaped_format_item})")
+                search_conditions.append(f"(mail={escaped_format_item})")
+
+        search_conditions = list(dict.fromkeys(search_conditions))
+        search_filter = f"(&(objectClass=user)(objectCategory=person)(|{''.join(search_conditions)}))"
+        logger.info(f"Searching for user '{username}' (actual filter uses escaped values), filter string: {search_filter}")
         
-        search_filter = f"(&(objectClass=user)(objectCategory=person)(|{' '.join(search_conditions)}))"        
-        logger.info(f"搜索用户 {username}，过滤条件: {search_filter}")
-        
-        # 确保基础DN格式正确
         base_dn = LDAP_BASE_DN
-        logger.info(f"搜索基础DN: {base_dn}")
         
-        # 尝试在不同的OU中搜索
-        search_bases = [
-            base_dn,  # 主域
-            f"CN=Users,{base_dn}",  # 用户容器
-            f"OU=Domain Users,{base_dn}",  # 域用户OU
-            f"OU=Staff,{base_dn}"  # 员工OU
-        ]
+        if LDAP_SEARCH_OUS:
+            search_bases = LDAP_SEARCH_OUS
+            logger.info(f"Using configured LDAP_SEARCH_OUS: {search_bases}")
+        else:
+            search_bases = [
+                base_dn,
+                f"CN=Users,{base_dn}",
+                f"OU=Domain Users,{base_dn}",
+                f"OU=Staff,{base_dn}"
+            ]
+            logger.info(f"LDAP_SEARCH_OUS not set, using default search bases: {search_bases}")
         
         user_found = False
-        for search_base in search_bases:
+        for search_base_item_loop in search_bases: # Renamed to avoid conflict
             try:
-                logger.info(f"在 {search_base} 中搜索用户 {username}")
+                logger.info(f"Searching for user {username} in {search_base_item_loop}")
                 success = conn.search(
-                    search_base=search_base,
+                    search_base=search_base_item_loop,
                     search_filter=search_filter,
                     attributes=['mail', 'userPrincipalName', 'sAMAccountName', 'displayName', 'givenName', 'sn', 'cn']
                 )
-                
                 if success and len(conn.entries) > 0:
                     user_found = True
-                    logger.info(f"在 {search_base} 中找到用户 {username}")
+                    logger.info(f"User {username} found in {search_base_item_loop}")
                     break
             except ldap3.core.exceptions.LDAPNoSuchObjectResult:
-                logger.warning(f"搜索基础DN不存在: {search_base}")
-                continue
+                logger.warning(f"Search Base DN does not exist: {search_base_item_loop}")
             except Exception as e:
-                logger.warning(f"在 {search_base} 中搜索时出错: {str(e)}")
-                continue
+                logger.warning(f"Error searching in {search_base_item_loop}: {str(e)}")
         
         if not user_found:
-            logger.warning(f"在所有搜索基础DN中均未找到用户: {username}")
-            logger.info(f"搜索结果为空: {conn.result}")
-            # 记录更详细的诊断信息
-            logger.info(f"LDAP服务器信息: {server.info}")
+            logger.warning(f"User not found in any search Base DNs: {username}")
+            logger.info(f"Search result empty: {conn.result}")
+            logger.info(f"LDAP server information: {server.info}")
             return None
             
-        logger.info(f"搜索结果: {conn.entries}")
+        logger.info(f"Search results: {conn.entries}")
+        if not conn.entries:
+            logger.warning(f"User {username} returned no entries after search, even if user_found is True. This should not happen.")
+            return None
             
-        # 优先使用mail属性，如果不存在则使用userPrincipalName
         if hasattr(conn.entries[0], 'mail') and conn.entries[0].mail:
             user_email = conn.entries[0].mail.value
         elif hasattr(conn.entries[0], 'userPrincipalName') and conn.entries[0].userPrincipalName:
             user_email = conn.entries[0].userPrincipalName.value
         else:
-            logger.error(f"用户 {username} 没有邮箱地址")
+            logger.error(f"User {username} has no email address")
             return None
             
-        logger.info(f"成功获取用户 {username} 的邮箱地址: {user_email}")
+        logger.info(f"Successfully retrieved email address for user {username}: {user_email}")
         return user_email
         
     except Exception as e:
-        logger.error(f"获取用户邮箱地址时出错: {str(e)}")
-        logger.error(f"异常类型: {type(e).__name__}")
-        # 记录堆栈跟踪以便更好地诊断问题
+        logger.error(f"Error getting user email address: {str(e)}")
+        logger.error(f"Exception type: {type(e).__name__}")
         import traceback
-        logger.error(f"堆栈跟踪: {traceback.format_exc()}")
+        logger.error(f"Stack trace: {traceback.format_exc()}")
         return None
 
 def send_verification_code(email):
-    """发送验证码到用户邮箱"""
-    logger.info(f"开始为邮箱 {email} 发送验证码")
+    """Send verification code to user's email"""
+    logger.info(f"Starting to send verification code for email: {email}")
     code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
-    expiration_time = datetime.now() + timedelta(minutes=5)
     
-    msg = MIMEText(f'您的密码重置验证码是：{code}，有效期5分钟。', 'plain', 'utf-8')
-    msg['Subject'] = '密码重置验证码'
-    msg['From'] = f'密码重置服务 <{SMTP_USERNAME}>'
+    msg = MIMEText(f'Your password reset verification code is: {code}, valid for 5 minutes.', 'plain', 'utf-8')
+    msg['Subject'] = 'Password Reset Verification Code'
+    msg['From'] = f'Password Reset Service <{SMTP_USERNAME}>'
     msg['To'] = f'{email}'
     msg['Date'] = datetime.now().strftime('%a, %d %b %Y %H:%M:%S %z')
 
     try:
-        logger.info(f"正在连接SMTP服务器: {SMTP_SERVER}:{SMTP_PORT}")
+        logger.info(f"Connecting to SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
         server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10)
         try:
-            logger.info(f"已连接到SMTP服务器: {SMTP_SERVER}:{SMTP_PORT}")
-            logger.info(f"正在登录SMTP服务器: {SMTP_USERNAME}")
+            logger.info(f"Connected to SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
+            logger.info(f"Logging into SMTP server: {SMTP_USERNAME}")
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            logger.info("SMTP登录成功")
+            logger.info("SMTP login successful")
             
-            logger.info(f"正在发送邮件到: {email}")
+            logger.info(f"Sending email to: {email}")
             server.send_message(msg)
             
-            # 开发环境下记录完整验证码
-            logger.info(f"邮件发送成功: 收件人={email}, 主题=密码重置验证码, 验证码={code}")
+            logger.info(f"Verification code email sent successfully to: {email}")
             
-            # 使用内存存储验证码
-            verification_codes[email] = {'code': code, 'expiration': expiration_time}
-            logger.info(f"验证码已存储到内存: 收件人={email}")
-            return True
+            if redis_client:
+                try:
+                    redis_key = f"verification_code:{email}"
+                    redis_client.setex(redis_key, VERIFICATION_CODE_EXPIRY_SECONDS, code)
+                    logger.info(f"Verification code stored in Redis: key={redis_key}, email={email}")
+                    return True
+                except redis.exceptions.RedisError as re:
+                    logger.error(f"Redis error: Failed to store verification code for email {email}. Error: {re}")
+                    return False
+            else:
+                logger.error("Redis client not available. Cannot store verification code.")
+                return False
         finally:
             server.quit()
             
     except smtplib.SMTPException as e:
-        logger.error(f"SMTP错误: {str(e)}")
-        logger.error(f"SMTP错误详情: {e.smtp_error.decode() if hasattr(e, 'smtp_error') else '无详细错误信息'}")
-        logger.error(f"SMTP错误代码: {e.smtp_code if hasattr(e, 'smtp_code') else '无错误代码'}")
-        logger.error(f"邮件发送失败: 收件人={email}, 错误详情={str(e)}")
+        logger.error(f"SMTP error: {str(e)}")
+        if hasattr(e, 'smtp_error') and e.smtp_error is not None:
+            smtp_error_details = e.smtp_error.decode() if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+            logger.error(f"SMTP error details: {smtp_error_details}")
+        else:
+            logger.error("SMTP error details: No detailed error message available from exception object.")
+        logger.error(f"SMTP error code: {e.smtp_code if hasattr(e, 'smtp_code') else 'No error code'}")
+        logger.error(f"Email sending failed: Recipient={email}, Error details={str(e)}")
         return False
     except Exception as e:
-        error_msg = f"发送验证码到 {email} 失败"
+        error_msg = f"Failed to send verification code to {email}"
         logger.error(error_msg)
-        logger.error(f"错误类型: {type(e).__name__}")
-        logger.error(f"错误详情: {str(e)}")
-        logger.error(f"邮件发送失败: 收件人={email}, 错误详情={str(e)}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Error details: {str(e)}")
+        logger.error(f"Email sending failed: Recipient={email}, Error details={str(e)}")
         return False
 
 def verify_code(email, code):
-    """验证用户输入的验证码"""
-    logger.info(f"开始验证邮箱 {email} 的验证码")
-    
-    # 使用内存验证码
-    if email not in verification_codes:
-        logger.warning(f"邮箱 {email} 没有对应的验证码记录")
+    """Verify user-entered verification code"""
+    logger.info(f"Starting to verify code for email {email}")
+
+    if not redis_client:
+        logger.error("Redis client not available. Cannot verify code.")
         return False
-    
-    stored_code = verification_codes[email]
-    if datetime.now() > stored_code['expiration']:
-        logger.warning(f"邮箱 {email} 的验证码已过期")
-        del verification_codes[email]
+
+    try:
+        redis_key = f"verification_code:{email}"
+        stored_code = redis_client.get(redis_key)
+
+        if not stored_code:
+            logger.warning(f"No verification code record for email {email} (key: {redis_key}), it might have expired or was not sent")
+            return False
+
+        if stored_code == code:
+            logger.info(f"Verification code for email {email} validated successfully")
+            try:
+                redis_client.delete(redis_key)
+                logger.info(f"Verification code deleted from Redis: key={redis_key}")
+            except redis.exceptions.RedisError as re:
+                logger.error(f"Redis error: Failed to delete verification code for key {redis_key}. Error: {re}")
+            return True
+        else:
+            logger.warning(f"Incorrect verification code provided for email {email} (key: {redis_key})")
+            return False
+
+    except redis.exceptions.RedisError as re:
+        logger.error(f"Redis error: Failed to retrieve verification code for email {email}. Error: {re}")
         return False
-    
-    if stored_code['code'] != code:
-        logger.warning(f"邮箱 {email} 提供的验证码不正确")
-        return False
-    
-    logger.info(f"邮箱 {email} 的验证码验证成功")
-    del verification_codes[email]
-    return True
 
 def validate_password_complexity(username, password):
-    """验证密码是否符合AD复杂性要求"""
+    """Validate if password meets AD complexity requirements"""
     errors = []
-    
-    if len(password) < 8:
-        errors.append("密码长度至少为8个字符")
-    
-    if not any(c.isupper() for c in password):
-        errors.append("密码必须包含至少一个大写字母")
-    
-    if not any(c.islower() for c in password):
-        errors.append("密码必须包含至少一个小写字母")
-    
-    if not any(c.isdigit() for c in password):
-        errors.append("密码必须包含至少一个数字")
-    
+    if len(password) < 8: errors.append("Password must be at least 8 characters long")
+    if not any(c.isupper() for c in password): errors.append("Password must contain at least one uppercase letter")
+    if not any(c.islower() for c in password): errors.append("Password must contain at least one lowercase letter")
+    if not any(c.isdigit() for c in password): errors.append("Password must contain at least one digit")
     special_chars = '!@#$%^&*()_+-=[]{};:,.<>?/'
-    if not any(c in special_chars for c in password):
-        errors.append("密码必须包含至少一个特殊字符")
-    
-    if username.lower() in password.lower():
-        errors.append("密码不能包含用户名")
-    
-    # 检查连续字符
+    if not any(c in special_chars for c in password): errors.append("Password must contain at least one special character")
+    if username.lower() in password.lower(): errors.append("Password cannot contain the username")
     for i in range(len(password)-2):
         if password[i] == password[i+1] == password[i+2]:
-            errors.append("密码不能包含连续重复的字符")
+            errors.append("Password cannot contain consecutively repeated characters")
             break
-    
-    # 检查键盘序列和常见数字序列
     keyboard_sequences = ['qwerty', 'asdfgh', '123456', '654321', '123', '321', '456', '789']
     password_lower = password.lower()
     for seq in keyboard_sequences:
         if seq in password_lower:
-            errors.append("密码不能包含键盘序列或连续的数字序列")
+            errors.append("Password cannot contain keyboard sequences or consecutive numerical sequences")
             break
-    
-    # 检查重复模式
     for i in range(len(password)-3):
         pattern = password[i:i+2]
         if pattern in password[i+2:]:
-            errors.append("密码不能包含重复的字符模式")
+            errors.append("Password cannot contain repeated character patterns")
             break
-            
-    # 检查常见单词和组织名称
     common_words = ['ucas', 'admin', 'password', 'welcome', 'login', 'user']
-    password_lower = password.lower()
     for word in common_words:
         if word in password_lower:
-            errors.append("密码不能包含常见单词或组织名称（如ucas）")
+            errors.append("Password cannot contain common words or organization names (e.g., ucas)")
             break
-    
     if errors:
         return False, "\n".join(errors)
-    
-    return True, "密码符合复杂性要求"
+    return True, "Password meets complexity requirements"
 
 def reset_ad_password(username, new_password):
-    """重置Active Directory用户密码"""
-    logger.info(f"开始重置用户 {username} 的密码")
+    """Reset Active Directory user password"""
+    logger.info(f"Starting to reset password for user {username}")
     
-    # 首先验证密码复杂性
     is_valid, message = validate_password_complexity(username, new_password)
     if not is_valid:
-        logger.error(f"密码不符合复杂性要求: {message}")
-        return False, f"密码不符合要求: {message}"
+        logger.error(f"Password does not meet complexity requirements for user '{username}': {message}")
+        return False, f"Password does not meet requirements: {message}"
         
     try:
-        # 使用LDAPConnection类进行连接
         with LDAPConnection() as conn:
-            # 搜索用户 - 支持多种用户标识符
-            search_filter = f'(&(objectClass=user)(|(userPrincipalName={username})(sAMAccountName={username})(mail={username})))'
-            logger.info(f"搜索用户，过滤条件: {search_filter}")
-            conn.search(
-                search_base=LDAP_BASE_DN,
-                search_filter=search_filter,
-                attributes=['distinguishedName', 'pwdLastSet', 'lockoutTime', 'userPrincipalName', 'mail']
-            )
-            
-            if not conn.entries:
-                logger.error(f"未找到用户: {username}")
-                return False, "未找到用户"
+            if conn is None:
+                logger.error(f"LDAP connection could not be established for password reset of user '{username}'.")
+                return False, "System error: Could not connect to user directory. Please contact support."
 
-            # 增强空值校验和错误处理
-            try:
-                if len(conn.entries) == 0:
-                    logger.error(f"LDAP查询返回空结果: {username}")
-                    return False, "用户不存在"
-                
-                user_entry = conn.entries[0]
-                if not hasattr(user_entry, 'entry_dn') or not user_entry.entry_dn:
-                    logger.error(f"用户条目缺少entry_dn属性: {username}")
-                    return False, "用户信息不完整"
+            escaped_username_for_reset = escape_filter_chars(username)
+            search_filter = f'(&(objectClass=user)(|(userPrincipalName={escaped_username_for_reset})(sAMAccountName={escaped_username_for_reset})(mail={escaped_username_for_reset})))'
+            logger.info(f"Sanitized LDAP search filter for password reset for '{username}' uses patterns like: (sAMAccountName={escaped_username_for_reset})")
 
-            except IndexError as e:
-                logger.error(f"LDAP查询结果索引异常: {str(e)}")
-                return False, "系统错误：用户信息获取失败"
-            except Exception as e:
-                logger.error(f"处理LDAP结果时发生意外错误: {str(e)}")
-                return False, "系统错误：用户信息处理异常"
+            if LDAP_SEARCH_OUS:
+                search_bases_for_reset = LDAP_SEARCH_OUS
+                logger.info(f"User search for password reset (user: '{username}') will use configured LDAP_SEARCH_OUS: {search_bases_for_reset}")
+            else:
+                search_bases_for_reset = [
+                    LDAP_BASE_DN,
+                    f"CN=Users,{LDAP_BASE_DN}",
+                    f"OU=Domain Users,{LDAP_BASE_DN}",
+                    f"OU=Staff,{LDAP_BASE_DN}"
+                ]
+                logger.info(f"LDAP_SEARCH_OUS not set. User search for password reset (user: '{username}') will use default search bases: {search_bases_for_reset}")
+
+            user_entry = None
+            user_dn = None
+            user_found_in_ou_search = False
+
+            for search_base_item in search_bases_for_reset:
+                logger.info(f"Searching for user '{username}' in '{search_base_item}' for password reset.")
+                try:
+                    search_success = conn.search(
+                        search_base=search_base_item,
+                        search_filter=search_filter,
+                        attributes=['distinguishedName', 'pwdLastSet', 'lockoutTime', 'userPrincipalName', 'mail', 'entryDN']
+                    )
+                    if search_success and conn.entries:
+                        if len(conn.entries) > 1:
+                            logger.warning(f"Multiple users found for '{username}' in '{search_base_item}' during password reset. Using the first entry: {conn.entries[0].entry_dn}")
+
+                        current_entry = conn.entries[0]
+                        if hasattr(current_entry, 'entry_dn') and current_entry.entry_dn:
+                            user_entry = current_entry
+                            user_dn = user_entry.entry_dn
+                            user_found_in_ou_search = True
+                            logger.info(f"User '{username}' found in '{search_base_item}' for password reset. DN: {user_dn}")
+                            break
+                        else:
+                            logger.error(f"User entry found for '{username}' in '{search_base_item}' but it is missing the 'entry_dn' attribute. This entry will be skipped.")
+
+                except ldap3.core.exceptions.LDAPNoSuchObjectResult:
+                    logger.warning(f"Search base '{search_base_item}' does not exist (during password reset search for '{username}').")
+                except Exception as e:
+                    logger.warning(f"Error searching for user '{username}' in '{search_base_item}' during password reset: {str(e)}")
+
+            if not user_found_in_ou_search:
+                logger.error(f"User '{username}' not found in any specified search OUs during password reset attempt.")
+                return False, "User account not found. Cannot reset password."
+
+            if not user_entry or not user_dn:
+                logger.error(f"User entry or DN not properly obtained for '{username}' after search, though user_found_in_ou_search was true.")
+                return False, "System error: Failed to retrieve complete user information. Please contact support."
                 
-            try:
-                user_dn = user_entry.entry_dn
-                logger.debug(f"获取到有效用户DN: {user_dn}")
-                    
-                logger.info(f"找到用户DN: {user_dn}")
-            except Exception as e:
-                logger.error(f"获取用户DN时出错: {str(e)}")
-                return False, f"获取用户DN时出错: {str(e)}"
-        
-            # 检查账户锁定状态并尝试解锁
-            if hasattr(conn.entries[0], 'lockoutTime'):
-                lockout_time = conn.entries[0].lockoutTime.value
+            if hasattr(user_entry, 'lockoutTime'):
+                lockout_time = user_entry.lockoutTime.value
                 if lockout_time:
-                    # 确保lockoutTime是数值类型
                     if isinstance(lockout_time, datetime):
                         lockout_time = int(lockout_time.timestamp())
                     if int(lockout_time) > 0:
-                        logger.info(f"尝试解锁用户账户: {username}")
-                        # 使用AD专用的解锁方法
-                        success = ldap3.extend.microsoft.unlockAccount.ad_unlock_account(conn, user_dn)
-                        if not success:
-                            logger.error(f"账户解锁失败: {username}")
-                            return False, "账户解锁失败，请联系管理员"
-                        logger.info(f"账户解锁成功: {username}")
+                        logger.info(f"Attempting to unlock user account: {username}")
+                        success_unlock = ldap3.extend.microsoft.unlockAccount.ad_unlock_account(conn, user_dn)
+                        if not success_unlock:
+                            logger.error(f"Account unlock failed for user {username} during password reset.")
+                            return False, "Your account is currently locked and an attempt to unlock it failed. Please contact your administrator for assistance."
+                        logger.info(f"Account unlock successful for user {username} during password reset.")
 
-            # 尝试重置密码
             try:
-                # 修改密码和账户控制
                 modify_attrs = {
                     'unicodePwd': [(ldap3.MODIFY_REPLACE, [f'"{new_password}"'.encode('utf-16-le')])],
                     'userPassword': [(ldap3.MODIFY_REPLACE, [new_password])],
-                    'userAccountControl': [(ldap3.MODIFY_REPLACE, ['66080'])],  # 设置用户不可更改密码
-                    'pwdLastSet': [(ldap3.MODIFY_REPLACE, ['-1'])]  # 密码立即生效
+                    'userAccountControl': [(ldap3.MODIFY_REPLACE, ['66080'])],  # 66080 = NORMAL_ACCOUNT (512) + DONT_EXPIRE_PASSWORD (65536) + PASSWORD_NOTREQD (32)
+                                                                                # PASSWORD_NOTREQD is often set temporarily during admin resets.
+                                                                                # DONT_EXPIRE_PASSWORD flag is standard, actual expiry is governed by domain policy & pwdLastSet.
+                    'pwdLastSet': [(ldap3.MODIFY_REPLACE, ['-1'])]  # Forces user to change password on next login.
                 }
-                success = conn.modify(user_dn, modify_attrs)
+                success_reset = conn.modify(user_dn, modify_attrs)
                 
-                if not success:
-                    error_msg = conn.result.get('description', '')
-                    logger.error(f"密码修改失败: {username}, 错误: {error_msg}")
-                    return False, "密码修改失败，请确保密码符合域策略要求"
-
-                if success:
-                    logger.info(f"密码重置成功: {username}")
-                    return True, "密码重置成功"
-                else:
-                    error_msg = conn.result.get('description', '')
+                if not success_reset:
+                    error_msg = conn.result.get('description', 'No description')
                     error_details = str(conn.result)
-                    logger.error(f"密码重置失败: {username}, 错误详情: {error_details}")
-                    
-                    if 'WILL_NOT_PERFORM' in error_details:
-                        if 'problem 5003' in error_details:
-                            # 提供更详细的密码策略要求
-                            policy_msg = (
-                                "密码不符合域策略要求，请确保：\n"
-                                "1. 密码长度至少为8个字符\n"
-                                "2. 包含大写字母、小写字母、数字和特殊字符\n"
-                                "3. 不能包含用户名或显示名称\n"
-                                "4. 不能包含连续重复的字符（如aaa）\n"
-                                "5. 不能包含常见的键盘序列（如qwerty）\n"
-                                "6. 不能使用最近使用过的密码\n"
-                                "7. 不能包含生日、电话等个人信息\n"
-                                "如果仍然失败，请联系系统管理员获取完整的密码策略要求。"
-                            )
-                            logger.info(f"向用户 {username} 提供密码策略要求提示")
-                            return False, policy_msg
-                        else:
-                            logger.error(f"密码重置被拒绝，可能是权限问题: {username}")
-                            return False, "密码重置操作被拒绝，请联系系统管理员"
+                    logger.error(f"Password modification failed for {username}: {error_msg}. Details: {error_details}")
+                    if 'WILL_NOT_PERFORM' in error_details and 'problem 5003' in error_details:
+                        return False, (
+                            "Password does not meet domain policy requirements. Common reasons include:\n"
+                            "- Too short (minimum 8 characters usually)\n"
+                            "- Lacks complexity (uppercase, lowercase, numbers, special characters)\n"
+                            "- Contains parts of your username or full name\n"
+                            "- Too similar to recent passwords.\n"
+                            "Please try a different password or contact your administrator for full policy details."
+                        )
                     elif 'CONSTRAINT_VIOLATION' in error_details:
-                        logger.info(f"用户 {username} 的密码不符合复杂度要求")
-                        return False, "密码不符合域策略要求，请使用更复杂的密码，确保包含大小写字母、数字和特殊字符"
-                    else:
-                        logger.error(f"未知错误导致密码重置失败: {username}, {error_msg}")
-                        return False, f"密码重置失败: {error_msg}"
+                         return False, "Password reset failed. This may be due to password complexity or history rules. Please try a different password or contact your administrator."
+                    return False, "Password reset failed. Please ensure your new password meets the domain's complexity and history requirements. If you need assistance, contact your administrator."
+
+                logger.info(f"Password reset successful: {username}")
+                return True, "Password reset successful"
 
             except ldap3.core.exceptions.LDAPInvalidCredentialsResult as e:
-                logger.error(f"密码重置失败(认证失败): {username}, {str(e)}")
-                return False, "系统认证失败，请联系管理员检查配置"
+                logger.error(f"Password reset failed (LDAP service account authentication issue) for user {username}: {str(e)}")
+                return False, "A system configuration error occurred. Please contact your administrator."
             except ldap3.core.exceptions.LDAPOperationResult as e:
-                logger.error(f"密码重置失败(LDAP操作错误): {username}, {str(e)}")
-                error_details = str(e)
-                if 'WILL_NOT_PERFORM' in error_details:
-                    if 'problem 5003' in error_details:
-                        return False, "密码不符合域策略要求，请检查密码是否满足：长度至少8位，包含大小写字母、数字和特殊字符"
-                    else:
-                        return False, "密码重置操作被拒绝，请联系系统管理员"
-                elif 'CONSTRAINT_VIOLATION' in error_details:
-                    return False, "密码不符合复杂度要求，请使用更复杂的密码"
-                else:
-                    return False, "密码重置操作失败，请稍后重试"
+                logger.error(f"Password reset failed (LDAP operation error) for user {username}: {str(e)}")
+                return False, "Password reset operation failed due to a server error. Please try again later. If the issue persists, contact your administrator."
             except Exception as e:
-                logger.error(f"密码重置过程中出错: {str(e)}")
-                return False, "系统内部错误，请联系管理员"
+                logger.error(f"Unexpected error during password reset LDAP modify operation for {username}: {str(e)}")
+                return False, "An unexpected internal error occurred while resetting the password. Please contact your administrator."
 
     except Exception as e:
-        logger.error(f"LDAP操作过程中出错: {str(e)}")
-        return False, f"系统错误: {str(e)}"
+        logger.error(f"Outer exception in reset_ad_password for user {username}: {str(e)}")
+        return False, "A system error occurred while processing your password reset request. Please try again later or contact support."
 
 @app.route('/api/send-code', methods=['POST'])
 def send_code():
@@ -558,70 +552,54 @@ def send_code():
     email = data.get('email')
     
     if not email:
-        logger.warning("收到发送验证码请求，但邮箱地址为空")
-        return jsonify({'success': False, 'message': '邮箱地址不能为空'}), 400
+        logger.warning("Received send code request, but email address is empty")
+        return jsonify({'success': False, 'message': 'Please provide an email address.'}), 400
     
     if not username:
-        logger.warning("收到发送验证码请求，但用户名为空")
-        return jsonify({'success': False, 'message': '用户名不能为空'}), 400
+        logger.warning("Received send code request, but username is empty")
+        return jsonify({'success': False, 'message': 'Please provide a username.'}), 400
     
-    logger.info(f"收到发送验证码请求: username={username}, email={email}")
+    logger.info(f"Received send code request: username={username}, email={email}")
     
-    # 验证邮箱地址是否匹配
     ad_email = get_user_email_from_ad(username)
     if not ad_email:
-        logger.warning(f"未找到用户 {username} 或无法获取用户信息")
-        # 提供更详细的错误信息和建议
-        error_message = (
-            f'未找到用户 {username}，可能的原因：\n'
-            '1. 用户名拼写错误\n'
-            '2. 用户账户不存在或已禁用\n'
-            '3. 用户可能在不同的组织单位(OU)中\n'
-            '请检查用户名是否正确，或尝试使用完整的邮箱地址作为用户名'
-        )
-        # 记录更多诊断信息
-        logger.info(f"LDAP服务器: {LDAP_SERVER}, 端口: 636, 基础DN: {LDAP_BASE_DN}")
-        logger.info(f"尝试的用户名格式: {username}, {username}@{LDAP_DOMAIN}")
+        logger.warning(f"User '{username}' not found or user information cannot be retrieved for send-code API.")
+        error_message = f"User '{username}' not found or unable to retrieve user information. Please check the username and try again. If the issue persists, contact support."
         return jsonify({'success': False, 'message': error_message}), 404
     
-    # 邮箱地址比较时忽略大小写，并去除前后空格
     if email.lower().strip() != ad_email.lower().strip():
-        logger.warning(f"用户提供的邮箱地址与域中的不匹配: provided={email}, actual={ad_email}")
-        # 提供部分隐藏的正确邮箱地址作为提示
+        logger.warning(f"User-provided email address does not match the one in the domain for user '{username}': provided={email}, actual={ad_email}")
         masked_email = mask_email(ad_email)
         return jsonify({
             'success': False, 
-            'message': f'提供的邮箱地址与用户在AD中的邮箱不匹配。正确的邮箱地址格式为: {masked_email}'
+            'message': f"The email address you provided does not match our records for user '{username}'. A hint for the correct email format is: {masked_email}. Please try again."
         }), 400
     
     try:
         if send_verification_code(email):
-            logger.info(f"成功发送验证码到邮箱: {email}")
-            return jsonify({'success': True, 'message': '验证码已发送，请检查您的邮箱'}), 200
+            logger.info(f"Successfully sent verification code to email: {email}")
+            return jsonify({'success': True, 'message': 'Verification code has been sent. Please check your email.'}), 200
         else:
-            logger.error(f"验证码发送失败: email={email}")
-            return jsonify({'success': False, 'message': '验证码发送失败，请检查邮箱地址是否正确或联系系统管理员'}), 500
+            logger.error(f"Failed to send verification code (send_verification_code returned False): email={email}")
+            return jsonify({'success': False, 'message': 'Failed to send verification code. Please ensure your email address is correct and try again. If the problem continues, please contact your system administrator.'}), 500
     except Exception as e:
-        logger.error(f"验证码发送异常: {str(e)}")
-        logger.error(f"异常类型: {type(e).__name__}")
-        # 记录堆栈跟踪
+        logger.error(f"Exception during send_code route for email {email}: {str(e)}")
+        logger.error(f"Exception type: {type(e).__name__}")
         import traceback
-        logger.error(f"堆栈跟踪: {traceback.format_exc()}")
-        return jsonify({'success': False, 'message': '验证码发送失败，请稍后重试或联系系统管理员'}), 500
+        logger.error(f"Stack trace: {traceback.format_exc()}")
+        return jsonify({'success': False, 'message': 'An unexpected error occurred while trying to send the verification code. Please try again later or contact your system administrator.'}), 500
 
-# 辅助函数：部分隐藏邮箱地址
 def mask_email(email):
-    """部分隐藏邮箱地址，只显示首字符、@符号和域名"""
+    """Partially hide email address, showing only the first character, @ symbol, and domain"""
     if not email or '@' not in email:
         return "***@***.***"
     
     parts = email.split('@')
-    username = parts[0]
+    username_part = parts[0]
     domain = parts[1]
     
-    # 只显示用户名的第一个字符，其余用*代替
-    if len(username) > 1:
-        masked_username = username[0] + '*' * (len(username) - 1)
+    if len(username_part) > 1:
+        masked_username = username_part[0] + '*' * (len(username_part) - 1)
     else:
         masked_username = '*'
     
@@ -629,15 +607,13 @@ def mask_email(email):
 
 @app.route('/api/get-config', methods=['GET'])
 def get_config():
-    """获取API配置信息"""
-    logger.info("获取API配置")
-    # 从环境变量获取服务器IP和端口
+    """Get API configuration information"""
+    logger.info("Getting API configuration")
     server_ip = os.getenv('SERVER_IP', '127.0.0.1')
     port = os.getenv('PORT', 5001)
     
-    # 构建API基础URL
     api_base_url = f"http://{server_ip}:{port}/api"
-    logger.info(f"返回API基础URL: {api_base_url}")
+    logger.info(f"Returning API base URL: {api_base_url}")
     
     return jsonify({
         'success': True,
@@ -652,32 +628,31 @@ def reset_password():
     code = data.get('code')
     new_password = data.get('new_password')
     
-    logger.info(f"收到密码重置请求: 用户名={username}, 邮箱={email}")
+    logger.info(f"Received password reset request: Username={username}, Email={email}")
     
     if not all([username, email, code, new_password]):
-        logger.warning(f"密码重置请求缺少必要字段: username={username}, email={email}")
-        return jsonify({'success': False, 'message': '所有字段都是必填的'}), 400
-    
-    # 再次验证邮箱地址是否匹配
+        logger.warning(f"Password reset request is missing required fields: username={username}, email={email}")
+        return jsonify({'success': False, 'message': 'Please fill in all required fields: username, email, verification code, and new password.'}), 400
+
     ad_email = get_user_email_from_ad(username)
-    if not ad_email or email.lower() != ad_email.lower():
-        logger.warning(f"密码重置时邮箱地址不匹配: provided={email}, actual={ad_email}")
-        return jsonify({'success': False, 'message': '用户名或邮箱地址无效'}), 400
+    if not ad_email or email.lower().strip() != ad_email.lower().strip():
+        logger.warning(f"Email address mismatch during password reset: provided={email}, ad_email_found={ad_email if ad_email else 'None'}")
+        return jsonify({'success': False, 'message': 'Invalid username or email. Please ensure you are using the same username and email you used to request the verification code.'}), 400
 
     if not verify_code(email, code):
-        logger.warning(f"验证码验证失败: email={email}")
-        return jsonify({'success': False, 'message': '验证码无效或已过期'}), 400
+        logger.warning(f"Verification code validation failed: email={email}")
+        return jsonify({'success': False, 'message': 'The verification code is invalid or has expired. Please request a new code.'}), 400
     
-    success, message = reset_ad_password(username, new_password)
-    if success:
-        logger.info(f"密码重置成功: username={username}")
+    success_op, message_op = reset_ad_password(username, new_password)
+    if success_op:
+        logger.info(f"Password reset successful: username={username}")
     else:
-        logger.error(f"密码重置失败: username={username}, message={message}")
-    return jsonify({'success': success, 'message': message}), 200 if success else 500
+        logger.error(f"Password reset failed: username={username}, message={message_op}")
+    return jsonify({'success': success_op, 'message': message_op}), 200 if success_op else 500
 
 def main():
-    """启动应用程序"""
-    logger.info("密码重置服务启动")
+    """Start the application"""
+    logger.info("Password reset service started")
     app.run(host='0.0.0.0', port=5001)
 
 if __name__ == '__main__':
