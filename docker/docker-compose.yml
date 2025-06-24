@@ -19,7 +19,7 @@ services:
     # environment: # Environment variables should be managed via .env file
     #  - FLASK_ENV=production
     env_file:
-      - ../.env # Assuming .env file is in the project root, one level up
+      - ../backend/.env # Load .env file from the backend directory
     ports:
       - "5001:5001"
     volumes:

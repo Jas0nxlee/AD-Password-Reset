@@ -92,41 +92,28 @@ git clone https://github.com/Jas0nxlee/AD-Password-Reset.git
 cd AD-Password-Reset
 ```
 
-2. 创建 `.env` 配置文件（参考上述传统安装部分的配置示例）
+2.  **准备环境文件**:
+    *   进入 `backend` 目录:
+        ```bash
+        cd backend
+        ```
+    *   复制模板文件:
+        ```bash
+        cp .env-template .env
+        ```
+    *   编辑 `backend/.env` 文件，填入您的特定配置 (LDAP, SMTP 详细信息等)。
+    *   **Docker Compose 重要提示**: 确保 `backend/.env` 文件中包含 `REDIS_HOST=redis`，以便后端服务能够连接到 Redis 容器。对于没有 Docker 的本地开发，您通常会使用 `REDIS_HOST=localhost`。根据需要设置其他变量，如 `FLASK_ENV=production` 或 `FLASK_ENV=development`。
+    *   返回到项目根目录:
+        ```bash
+        cd ..
+        ```
 
-3. 创建 `docker-compose.yml` 文件：
-```yaml
-version: '3.8'
-services:
-  backend:
-    build: 
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "5001:5001"
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "5173:80"
-    depends_on:
-      - backend
-
-networks:
-  default:
-    driver: bridge
-```
-
-4. 启动服务：
-```bash
-docker-compose up -d
-```
+3.  **使用 Docker Compose 构建并启动服务**:
+    `docker-compose.yml` 文件位于 `docker/` 目录中。请从**项目根目录**运行以下命令:
+    ```bash
+    docker-compose -f docker/docker-compose.yml up -d --build
+    ```
+    此命令会告知 Docker Compose 使用指定的 YAML 文件 (位于 `docker/` 目录)，并将构建镜像并启动服务 (后端、前端和 Redis)。`docker-compose.yml` 中的 `env_file` 路径是相对于 `docker-compose.yml` 文件本身，指向 `../backend/.env`。
 
 5. 访问应用：
 在浏览器中访问 `http://localhost:5173`
